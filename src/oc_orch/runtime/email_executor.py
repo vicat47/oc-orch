@@ -90,10 +90,19 @@ class OperatorEmailExecutor:
     def _open(self):
         conn = init(self._home)
         try:
+            from ..domain.operator_email import policy_state, POLICY_ENABLED
+
             svc = make_operator_email(conn, clock=self._clock,
                                      policy=self._policy, transport=self._transport)
+            failover_svc = None
+            if self._policy is not None and policy_state(self._policy) == POLICY_ENABLED:
+                from ..composition import make_failover_email
+
+                failover_svc = make_failover_email(
+                    conn, clock=self._clock, policy=self._policy,
+                    transport=self._transport)
             ledger = Ledger(conn, self._home, clock=self._clock)
-            return conn, svc, ledger
+            return conn, svc, failover_svc, ledger
         except BaseException:
             conn.close()
             raise
@@ -108,10 +117,10 @@ class OperatorEmailExecutor:
         result: dict[str, Any] = {"ok": True, "owner": self._owner}
         conn = None
         try:
-            conn, svc, ledger = self._open()
+            conn, svc, failover_svc, ledger = self._open()
             seq = self._next_seq(ledger)
             result["seq"] = seq
-            self._run_steps(svc, result)
+            self._run_steps(svc, result, failover_svc)
             result["external_calls"] = {
                 "send": self._transport.send_count,
                 "search": self._transport.search_count,
@@ -130,7 +139,7 @@ class OperatorEmailExecutor:
                     pass
         return result
 
-    def _run_steps(self, svc, result: dict) -> None:
+    def _run_steps(self, svc, result: dict, failover_svc=None) -> None:
         steps: dict[str, Any] = {}
         ok = True
 
@@ -153,6 +162,14 @@ class OperatorEmailExecutor:
             lambda: svc.verify_receipt(owner=self._owner))
         run("dispatch_once",
             lambda: svc.dispatch_once(owner=self._owner))
+        # 故障知会发送（独立通道）：失败不影响主链路 ok；未配置显式跳过。
+        try:
+            out = (failover_svc.dispatch_once(owner=self._owner)
+                   if failover_svc else {"result": "not-configured"})
+            steps["failover_dispatch_once"] = out if isinstance(out, dict) \
+                else {"result": str(out)}
+        except Exception as exc:  # noqa: BLE001
+            steps["failover_dispatch_once"] = {"error": _public_error(exc)}
         result["steps"] = steps
         result["ok"] = ok
 

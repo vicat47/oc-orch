@@ -63,12 +63,7 @@ class FailoverStateError(RuntimeError):
     """
 
 
-def failover_episode_id(project: str, task_id: str, route: str) -> str:
-    """稳定 episode 身份：project+task+失败路由（不含时间/观察计数）。"""
-    import hashlib
-
-    raw = f"{project}\x00{task_id}\x00{route}"
-    return "EP-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+from ..domain.failover import episode_id as failover_episode_id  # noqa: E402
 
 
 # ---- 校验辅助 ----------------------------------------------------------------
@@ -465,6 +460,100 @@ class FailoverLedger:
 
     def new_id(self, prefix: str, length: int = 12) -> str:
         return short_id(prefix, length)
+
+    # ---- failover 事实 source 校验（供 EmailOutbox 注入） --------------------
+    def recheck_failover_binding(self, conn: sqlite3.Connection,
+                                 binding: dict) -> dict:
+        """failover 事实验证（active/unknown；事实知会不因路由换代失效，N08）。
+
+        - ``failover-episode``：episode 记录存在且归属与绑定一致 -> active；
+          记录损坏/缺失/归属不符 -> unknown（fail-closed）。事件版本只作审计，
+          不因 episode 前进为 stale（已发生事实即便恢复也保留知会，N07/N08）。
+        - ``failover-operation``（恢复事件）：操作存在且关联 episode 已 resumed
+          -> active（可发恢复摘要）；否则 unknown。
+        """
+        if not isinstance(binding, dict):
+            return _v(False, "unknown", "invalid-binding")
+        kind = binding.get("source_kind")
+        sid = binding.get("source_id")
+        if not (_nk(kind) and _nk(sid)):
+            return _v(False, "unknown", "binding-fields-invalid")
+        if kind == "failover-episode":
+            try:
+                rec = self._load_with(conn, "episode", sid)
+            except FailoverStateError:
+                return _v(False, "unknown", "record-corrupt")
+            if rec is None:
+                return _v(False, "unknown", "episode-missing")
+            if binding.get("source_project") not in (None, rec.get("project")):
+                return _v(False, "unknown", "project-mismatch")
+            if binding.get("source_task_id") not in (None, rec.get("task_id")):
+                return _v(False, "unknown", "task-mismatch")
+            if binding.get("source_session") not in (None, rec.get("session_id")):
+                return _v(False, "unknown", "session-mismatch")
+            return _v(True, "active", "verified")
+        if kind == "failover-operation":
+            try:
+                op = self._load_with(conn, "operation", sid)
+            except FailoverStateError:
+                return _v(False, "unknown", "record-corrupt")
+            if op is None:
+                return _v(False, "unknown", "operation-missing")
+            ep_id = op.get("episode_id")
+            if not _nk(ep_id):
+                return _v(False, "unknown", "operation-episode-missing")
+            try:
+                ep = self._load_with(conn, "episode", ep_id)
+            except FailoverStateError:
+                return _v(False, "unknown", "record-corrupt")
+            if ep is None or ep.get("status") != "resumed":
+                return _v(False, "unknown", "episode-not-resumed")
+            return _v(True, "active", "verified-resumed")
+        return _v(False, "unknown", "unsupported-source-kind")
+
+    def _load_with(self, conn: sqlite3.Connection, kind: str,
+                   record_id: str) -> dict | None:
+        """与 _load 同规则，但用给定 conn（与 outbox validator 同一事务）。"""
+        raw = meta_get(conn, _record_key(kind, record_id))
+        if raw is None:
+            return None
+        rec = json_loads(raw, default=None)
+        if not isinstance(rec, dict):
+            raise FailoverStateError(f"failover 记录损坏（{kind}/{record_id}）：非对象")
+        _validate_record(rec)
+        return rec
+
+    _BINDING_FLAT_KEYS = ("source_kind", "source_id", "source_condition_key",
+                            "source_version", "source_state",
+                            "source_incident_type", "source_project",
+                            "source_task_id", "source_session", "source_model")
+
+    def make_source_validator(self) -> Any:
+        """兼容 EmailOutbox.source_validator 窄端口：(conn, item) -> verdict。
+
+        与 operator_incident 同构：outbox 把 source_binding 扁平化到行字段，
+        先从行重建绑定（item 无 source_binding 键），再按 failover 归属重验。
+        """
+
+        def validate(conn, item):
+            binding = None
+            if isinstance(item, dict):
+                binding = item.get("source_binding")
+                if not isinstance(binding, dict) and item.get("source_kind"):
+                    binding = {k: item.get(k) for k in self._BINDING_FLAT_KEYS}
+            if not isinstance(binding, dict):
+                return _v(False, "unknown", "source-binding-missing")
+            try:
+                return self.recheck_failover_binding(conn, binding)
+            except (FailoverStateError, ValueError, TypeError):
+                return _v(False, "unknown", "recheck-read-failed")
+
+        return validate
+
+
+def _v(ok: bool, state: str, reason: str) -> dict:
+    """failover outbox 判定辅助（state/ok/reason 与 operator_incident 同构）。"""
+    return {"state": state, "ok": bool(ok), "reason": reason}
 
 
 __all__ = ["FailoverLedger", "FailoverStateError", "failover_episode_id",

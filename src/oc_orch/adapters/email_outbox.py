@@ -75,8 +75,13 @@ FAILURE_CLASSES = frozenset({"unknown", "transient", "rate-limited", "auth",
 SOURCE_KIND_RESPONSIBILITY = "responsibility"
 SOURCE_KIND_TASK = "task"
 SOURCE_KIND_INCIDENT = "incident"
-SOURCE_KINDS = frozenset({SOURCE_KIND_RESPONSIBILITY, SOURCE_KIND_TASK,
-                          SOURCE_KIND_INCIDENT})
+# provider 故障切换事实与恢复操作（provider-fault-failover）：outbox 行源绑定 由 ``FailoverLedger.make_source_validator`` 校验，不入 operator_incident。
+SOURCE_KIND_FAILOVER_EPISODE = "failover-episode"
+SOURCE_KIND_FAILOVER_OPERATION = "failover-operation"
+SOURCE_KINDS = frozenset({
+    SOURCE_KIND_RESPONSIBILITY, SOURCE_KIND_TASK, SOURCE_KIND_INCIDENT,
+    SOURCE_KIND_FAILOVER_EPISODE, SOURCE_KIND_FAILOVER_OPERATION,
+})
 SOURCE_BINDING_KEYS = ("source_kind", "source_id", "source_condition_key",
                        "source_version", "source_state",
                        "source_incident_type", "source_project",

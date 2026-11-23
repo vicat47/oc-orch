@@ -223,6 +223,34 @@ def make_operator_incident(ledger, clock=None, *, policy=None, transport=None,
         recipient_refs=recipient_refs)
 
 
+def make_failover_email(conn, *, clock=None, policy=None, transport=None):
+    """提供商故障知会：FailoverLedger validator + 独立 outbox + 复用发送/回执。
+
+    - outbox 源校验用 failover 事实 validator（N08：事实知会不因换代失效）；
+    - 发送/回执/过期扫描完全复用 ``OperatorEmailService``（dispatch/verify/claim）；
+    - policy 缺省 disabled（fail-closed）；显式传入或调用方从 email-policy.json 加载。
+    """
+    from .adapters.agently_mail import AgentlyMailTransport
+    from .adapters.email_outbox import EmailOutbox
+    from .adapters.failover_ledger import FailoverLedger
+    from .application.failover_email import FailoverEmailService
+    from .application.operator_email import OperatorEmailService
+    from .domain.operator_email import EmailPolicy
+
+    actual_clock = clock or SystemClock()
+    failover = FailoverLedger(conn, clock=actual_clock.now_ms)
+    outbox = EmailOutbox(
+        conn, actual_clock,
+        source_validator=failover.make_source_validator(),
+        require_source_binding=True)
+    email = OperatorEmailService(
+        outbox,
+        transport if transport is not None else AgentlyMailTransport(),
+        actual_clock,
+        policy if policy is not None else EmailPolicy())
+    return FailoverEmailService(email, actual_clock)
+
+
 def make_responsibilities(ledger):
     """S4 后续责任存储：与 Ledger 共用连接/时钟，不自动 DDL（schema v3）。"""
     from .adapters.responsibility_ledger import ResponsibilityStore

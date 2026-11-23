@@ -323,6 +323,7 @@ class Supervisor:
         self._dependency_wait = None
         self._operator_incident = None
         self._fault_recovery = None
+        self._failover_email = None
 
     # ---- 惰性装配：提供商故障恢复（同一连接/时钟；构造不访问网络） ----
     def _fault_recovery_service(self):
@@ -357,6 +358,68 @@ class Supervisor:
                               str(self.last_cycle_at),
                               {"error": redact(repr(exc), 400)})
             return {"error": type(exc).__name__}
+
+    # ---- 故障知会桥接（事实入队；发送由独立 email executor 完成） ----
+    def _failover_email_service(self):
+        if self._failover_email is None:
+            try:
+                from ..adapters.email_config import load_email_runtime
+                runtime = load_email_runtime(self.home)
+                if not runtime.enabled:
+                    self._failover_email = False  # 未启用：显式不配置
+                    return None
+                from ..composition import make_failover_email
+                from ..adapters.agently_mail import AgentlyMailTransport
+
+                self._failover_email = make_failover_email(
+                    self.conn, clock=self.clock,
+                    policy=runtime.policy,
+                    transport=AgentlyMailTransport(
+                        sender_binding=runtime.sender_binding))
+            except Exception as exc:
+                self.ledger.audit("supervisor", "failover-email.assemble-error",
+                                  "cycle", str(self.last_cycle_at),
+                                  {"error": redact(repr(exc), 300)})
+                self._failover_email = False
+                return None
+        return self._failover_email if self._failover_email else None
+
+    def bridge_failover_events(self, *, now: int) -> dict:
+        """把 fault episode 的当前状态事实桥接进 failover 邮件 outbox（幂等去重）。
+
+        未启用邮件/未装配 → 显式跳过；outbox 按稳定事件身份去重，重复观察
+        返回 no-new-event，新版本才是 update；网络发送仍在独立 executor。
+        """
+        from ..domain import failover as fo
+
+        svc = self._failover_email_service()
+        if svc is None:
+            return {"skipped": "failover-email-not-configured"}
+        try:
+            listed = self._fault_recovery_service().failover.list_records(
+                "episode", limit=20)
+        except Exception as exc:
+            self.ledger.audit("supervisor", "failover-email.bridge-error",
+                              "cycle", str(self.last_cycle_at),
+                              {"error": redact(repr(exc), 300)})
+            return {"error": type(exc).__name__}
+        enqueued = 0
+        scanned = 0
+        for rec in listed["records"]:
+            if rec.get("status") not in (
+                    fo.ACTIVE_EPISODE_STATES | {fo.EPISODE_BLOCKED_MANUAL}):
+                continue
+            scanned += 1
+            try:
+                out = svc.enqueue_episode_event(rec)
+                if out.get("result") == "enqueued":
+                    enqueued += 1
+            except Exception as exc:
+                self.ledger.audit("supervisor", "failover-email.enqueue-error",
+                                  "failover", rec.get("episode_id") or "",
+                                  {"error": redact(repr(exc), 300)})
+        return {"scanned": scanned, "enqueued": enqueued,
+                "invalid_records": listed.get("invalid_records", 0)}
 
     # ---- 单实例 ---------------------------------------------------
     def acquire_lock(self) -> None:
