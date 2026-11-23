@@ -149,13 +149,29 @@ def model_ref_from_dict(value: Any) -> dict | None:
 
 
 def models_equal(a: dict | None, b: dict | None) -> bool:
-    """完整身份（provider/id/variant）相等；任一侧无法解析 → False。"""
+    """完整身份（provider/id/variant）相等；任一侧无法解析 → False。
+
+    variant 缺失（None）与显式缺键视为相等：切换请求未指定 variant 时，
+    目标模型不带 variant，而 session 可能回报默认 variant。
+    """
     na, nb = model_ref_from_dict(a), model_ref_from_dict(b)
     if na is None or nb is None:
         return False
     return na["providerID"] == nb["providerID"] and na["id"] == nb["id"] \
-        and na.get("variant") == nb.get("variant")
+        and (na.get("variant") or None) == (nb.get("variant") or None)
 
+
+def base_route(route: str) -> str:
+    """去掉 variant 后缀的基础路由；用于策略列表/阻断键匹配。"""
+    return str(route or "").split("#", 1)[0]
+
+
+def episode_id(project: str, task_id: str, route: str) -> str:
+    """稳定故障链身份：project+task+失败路由（不含时间/观察计数）。"""
+    import hashlib
+
+    raw = f"{project}\x00{task_id}\x00{route}"
+    return "EP-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
 
 def route_key(provider: str, model: str, variant: str | None = None) -> str:
     """稳定路由键 "provider/model[#variant]"（凭据级聚合由调用方决定）。"""
@@ -352,7 +368,7 @@ __all__ = [
     "EPISODE_CONTINUATION_REQUESTED", "EPISODE_CONTINUATION_UNKNOWN",
     "EPISODE_RESUMED", "EPISODE_BLOCKED_MANUAL", "EPISODE_SUPERSEDED",
     "EPISODE_CANCELLED", "ACTIVE_EPISODE_STATES", "TERMINAL_EPISODE_STATES",
-    "can_transition", "model_ref", "model_ref_from_dict", "models_equal",
+    "can_transition", "base_route", "episode_id", "model_ref", "model_ref_from_dict", "models_equal",
     "route_key", "classify_fault_source", "attempts_remaining",
     "transients_exhausted", "switch_allowed", "notify_update_allowed",
     "HARD_CATEGORIES", "AUTO_FAILOVER_CATEGORIES", "RETRY_ONLY_CATEGORIES",

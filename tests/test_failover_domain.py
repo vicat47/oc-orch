@@ -166,6 +166,12 @@ class TestModelIdentity(unittest.TestCase):
         self.assertEqual(route_key("p", "m"), "p/m")
         self.assertEqual(route_key("p", "m", "v"), "p/m#v")
 
+    def test_base_route_strips_variant(self):
+        from oc_orch.domain.failover import base_route
+
+        self.assertEqual(base_route("p/m#v"), "p/m")
+        self.assertEqual(base_route("p/m"), "p/m")
+
 
 class TestBudgetAndTransients(unittest.TestCase):
     def test_transients_waiting_respects_trusted_retry_after(self):
