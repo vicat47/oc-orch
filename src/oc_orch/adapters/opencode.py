@@ -325,6 +325,40 @@ class Client:
             raise
         return (out or {}).get("data")
 
+    def session_model(self, session_id: str) -> dict | None:
+        """读取 session 当前模型（V2：GET /api/session/{sid} → data.model）。
+
+        返回 ``{"providerID", "id", "variant?"}`` 或 None（404/缺字段）。
+        只用于与切换请求对账，不能证明模型已产生有效工作。
+        """
+        session = self.get_session(session_id)
+        if not isinstance(session, dict):
+            return None
+        model = session.get("model")
+        if not isinstance(model, dict):
+            return None
+        return model
+
+    def switch_model(self, session_id: str, *, provider: str, model: str,
+                     variant: str | None = None) -> dict:
+        """同会话切换后续回合模型（V2：POST /api/session/{sid}/model）。
+
+        - 请求体 ``{"model": {"providerID", "id", "variant?"}}``（OpenAPI
+          operationId ``session.switchModel``）；204 无正文视为受理。
+        - 写请求**绝不自动重试**：HTTP 错误（400/401/404/5xx）原样抛
+          ApiError，传输层错误抛 TransportError——调用方按“结果未知”对账，
+          不得因返回异常而猜测失败或重放。
+        - 返回的 ``accepted=True`` 只表示服务端受理切换请求，不表示切换
+          已生效；调用方随后以 ``session_model`` 确认。
+        """
+        body: dict[str, Any] = {
+            "model": {"providerID": provider, "id": model},
+        }
+        if variant:
+            body["model"]["variant"] = variant
+        self._post(f"/api/session/{session_id}/model", body)
+        return {"status": 204, "accepted": True}
+
     def active_sessions(self) -> dict[str, dict]:
         path = "/api/session/active"
         out = self._get(path)

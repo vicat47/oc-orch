@@ -821,5 +821,149 @@ class TestSseContract(_ContractBase):
                 self.fail("SSE 不应在 EOF 时伪造事件")
 
 
+class TestSwitchModelContract(_ContractBase):
+    """同会话模型切换契约（V2 session.switchModel POST /api/session/{sid}/model）。
+
+    覆盖 1.2：204 无正文受理、请求体形状、HTTP 写请求不重试、传输未知、
+    以及对账读取 session_model 的 404/缺字段语义（F09/F11/F12 的客户端面）。
+    """
+
+    def _body_json(self, srv) -> dict:
+        self.assertTrue(srv.bodies, "应至少收到一次请求体")
+        return json.loads(srv.bodies[-1].decode("utf-8"))
+
+    def test_switch_204_accepted_and_request_shape(self):
+        srv = self.server([{"status": 204, "payload": ""}])
+        client = self.client_to(srv.port)
+        out = client.switch_model("ses_a", provider="yfzs-newapi",
+                                  model="DeepSeek-AI/DeepSeek-V4-Flash",
+                                  variant="default")
+        self.assertEqual(out, {"status": 204, "accepted": True})
+        self.assertEqual(srv.count("POST"), 1)
+        self.assertIn("/api/session/ses_a/model", srv.seen[0][1])
+        body = self._body_json(srv)
+        self.assertEqual(body["model"]["providerID"], "yfzs-newapi")
+        self.assertEqual(body["model"]["id"], "DeepSeek-AI/DeepSeek-V4-Flash")
+        self.assertEqual(body["model"].get("variant"), "default")
+        self.assertEqual(sorted(body), ["model"])
+
+    def test_switch_without_variant_omits_key(self):
+        srv = self.server([{"status": 204, "payload": ""}])
+        client = self.client_to(srv.port)
+        client.switch_model("ses_a", provider="deepseek", model="deepseek-flash")
+        body = self._body_json(srv)
+        self.assertEqual(set(body["model"]), {"providerID", "id"})
+
+    def test_switch_400_rejected_no_retry(self):
+        srv = self.server([{"status": 400, "payload": json.dumps(
+            {"_tag": "InvalidRequestError", "message": "bad model"})}])
+        client = self.client_to(srv.port)
+        with self.assertRaises(ApiError) as raised:
+            client.switch_model("ses_a", provider="p", model="m")
+        self.assertEqual(raised.exception.status, 400)
+        self.assertEqual(raised.exception.tag, "InvalidRequestError")
+        self.assertEqual(srv.count("POST"), 1)  # 写请求绝不自动重试
+
+    def test_switch_401_rejected_no_reload_no_retry(self):
+        srv = self.server([{"status": 401, "payload": "{}"}])
+        client = self.client_to(srv.port)
+        with self.assertRaises(ApiError) as raised:
+            client.switch_model("ses_a", provider="p", model="m")
+        self.assertEqual(raised.exception.status, 401)
+        self.assertEqual(srv.count("POST"), 1)
+
+    def test_switch_404_is_api_error(self):
+        srv = self.server([{"status": 404, "payload": "{}"}])
+        client = self.client_to(srv.port)
+        with self.assertRaises(ApiError) as raised:
+            client.switch_model("missing", provider="p", model="m")
+        self.assertEqual(raised.exception.status, 404)
+
+    def test_switch_transport_error_is_unknown_no_retry(self):
+        # 连接被接受后直接断开：结果未知，抛 TransportError 且绝不重放。
+        srv = self.server([{"close": True}])
+        client = self.client_to(srv.port)
+        with self.assertRaises(TransportError):
+            client.switch_model("ses_a", provider="p", model="m")
+        self.assertEqual(srv.count("POST"), 1)
+
+    def test_switch_204_then_session_model_reconciles(self):
+        srv = self.server([
+            {"status": 204, "payload": ""},
+            {"status": 200, "payload": json.dumps({"data": {
+                "id": "ses_a",
+                "model": {"providerID": "yfzs-newapi",
+                          "id": "DeepSeek-AI/DeepSeek-V4-Flash",
+                          "variant": "default"},
+            }})},
+        ])
+        client = self.client_to(srv.port)
+        client.switch_model("ses_a", provider="yfzs-newapi",
+                            model="DeepSeek-AI/DeepSeek-V4-Flash")
+        model = client.session_model("ses_a")
+        self.assertEqual(model["providerID"], "yfzs-newapi")
+        self.assertEqual(model["id"], "DeepSeek-AI/DeepSeek-V4-Flash")
+        self.assertEqual(srv.count("GET", "/api/session/ses_a"), 1)
+
+    def test_session_model_404_returns_none(self):
+        srv = self.server([{"status": 404, "payload": "{}"}])
+        client = self.client_to(srv.port)
+        self.assertIsNone(client.session_model("missing"))
+
+    def test_session_model_missing_field_returns_none(self):
+        srv = self.server([{"status": 200, "payload": json.dumps(
+            {"data": {"id": "ses_a", "model": None}})}])
+        client = self.client_to(srv.port)
+        self.assertIsNone(client.session_model("ses_a"))
+
+
+class TestFakeSwitchModel(unittest.TestCase):
+    """FakeClient 对齐窄端口：204/404/错误注入/模型更新（供恢复用例复用）。"""
+
+    def setUp(self):
+        from tests.fakes import FakeClient, FakeService, ApiError as FApi
+
+        self.FakeClient = FakeClient
+        self.FakeService = FakeService
+        self.FakeApiError = FApi
+
+    def _client(self, model=None):
+        from tests.fakes import FakeClient, FakeService
+
+        client = FakeClient(FakeService())
+        client.sessions["ses_a"] = {
+            "id": "ses_a", "title": "t", "model": model or {},
+            "location": {"directory": "/tmp"}, "metadata": {},
+            "outcome": None, "time": {},
+        }
+        return client
+
+    def test_fake_switch_updates_session_model(self):
+        client = self._client()
+        out = client.switch_model("ses_a", provider="yfzs-newapi",
+                                  model="DeepSeek-AI/DeepSeek-V4-Flash",
+                                  variant="default")
+        self.assertTrue(out["accepted"])
+        self.assertEqual(client.session_model("ses_a"),
+                         {"providerID": "yfzs-newapi",
+                          "id": "DeepSeek-AI/DeepSeek-V4-Flash",
+                          "variant": "default"})
+        self.assertEqual(client.switch_calls[0]["session_id"], "ses_a")
+
+    def test_fake_switch_404_missing_session(self):
+        client = self._client()
+        with self.assertRaises(self.FakeApiError) as raised:
+            client.switch_model("missing", provider="p", model="m")
+        self.assertEqual(raised.exception.status, 404)
+
+    def test_fake_switch_injected_error_not_retried(self):
+        from oc_orch.client import TransportError
+
+        client = self._client()
+        client.fail("switch_model", TransportError("path", "boom"))
+        with self.assertRaises(TransportError):
+            client.switch_model("ses_a", provider="p", model="m")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
