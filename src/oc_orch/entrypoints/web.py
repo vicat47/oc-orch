@@ -24,6 +24,7 @@ import urllib.parse
 from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from time import monotonic
 
 from .. import __version__
 from ..application.manual_recovery import (
@@ -58,6 +59,7 @@ MAX_BODY = 1024 * 1024
 SUPERVISOR_TIMEOUT = 60
 # 调度者元数据（标题/创建时间/在线）缓存：自动刷新周期内不逐次查询远端服务，
 # 保证排序与标题在刷新中稳定；失效时保留旧值并以 stale 标记，不重排。
+_COORD_ACTIVE_TTL_S = 1  # 合并总览与工作台并发读取；短于页面的 5 秒轮询周期。
 COORD_META_TTL_MS = 30_000
 COORD_META_STALE_MS = 300_000
 _COORD_CLIENT_TIMEOUT = 3.0  # 元数据只读查询的有界超时；仅用于本页只读探活
@@ -198,6 +200,10 @@ class WebServer:
         self.read_only = read_only
         self.verbose = verbose
         self.client_factory = client_factory
+        self._coord_meta: dict[str, dict] = {}
+        self._coord_meta_lock = threading.Lock()
+        self._coord_active: dict | None = None
+        self._coord_active_until = 0.0
         self.httpd: ThreadingHTTPServer | None = None
         self.thread: threading.Thread | None = None
         self.cfg = load_config(self.home)
@@ -575,11 +581,6 @@ class WebServer:
     # V2 session 对象 time.created；台账无创建时间列，缺失/失败时明确显示未知，
     # 采用 session ID 稳定兜底排序，绝不从 ID 推断创建时间。
 
-    def __init__coordinate_meta(self):
-        if getattr(self, "_coord_meta", None) is None:
-            self._coord_meta: dict[str, dict] = {}
-            self._coord_meta_lock = threading.Lock()
-
     def _coord_client(self):
         """只读元数据探活的客户端；缺省用有界超时 Client，测试可注入 factory。
         经由 composition 再导出，保持 entrypoints 不直接接触 adapters。"""
@@ -587,9 +588,20 @@ class WebServer:
             return self.client_factory()
         return Client(timeout=_COORD_CLIENT_TIMEOUT)
 
-    def _coord_meta_ensure(self, client, sids: list[str], now: int) -> dict:
-        """按 TTL 补取元数据；失败保留旧值并按“未知/过期”标记。返回 {sid: ent}。"""
-        self.__init__coordinate_meta()
+    def _coord_activity(self, client) -> dict | None:
+        """锁内共享最近一秒的前台执行快照，失败时丢弃旧快照。"""
+        if monotonic() >= self._coord_active_until:
+            try:
+                self._coord_active = client.active_sessions()
+            except Exception:
+                self._coord_active = None
+            self._coord_active_until = monotonic() + _COORD_ACTIVE_TTL_S
+        return self._coord_active
+
+    def _coord_meta_ensure(self, client, sids: list[str], now: int) -> tuple[dict, dict | None]:
+        """按长 TTL 补取标题、创建时间，同时为所有会话读取同一份前台执行状态。"""
+        if not sids:
+            return {}, None
         with self._coord_meta_lock:
             out: dict[str, dict] = {}
             to_fetch = []
@@ -599,20 +611,13 @@ class WebServer:
                     out[sid] = ent
                 else:
                     to_fetch.append(sid)
-            if not to_fetch:
-                return out
-            active: set | None = set()
-            try:
-                active = set((client.active_sessions() or {}).keys())
-            except Exception as e:
-                active = None  # 未知 != 空闲；不把失败当作离线
+            active = self._coord_activity(client)
             for sid in to_fetch:
                 prev = self._coord_meta.get(sid) or {}
                 if active is None:
                     ent = {
                         "title": prev.get("title"),
                         "created_at": prev.get("created_at"),
-                        "active": prev.get("active"),
                         "fetched_at": now,
                         "error": prev.get("error") or "active-unknown",
                         "missing": prev.get("missing", False),
@@ -626,7 +631,6 @@ class WebServer:
                     ent = {
                         "title": prev.get("title"),
                         "created_at": prev.get("created_at"),
-                        "active": prev.get("active"),
                         "fetched_at": now,
                         "error": f"{type(e).__name__}: {str(e)[:160]}",
                         "missing": prev.get("missing", False),
@@ -635,7 +639,7 @@ class WebServer:
                     out[sid] = ent
                     continue
                 if not isinstance(s, dict):
-                    ent = {"title": None, "created_at": None, "active": None,
+                    ent = {"title": None, "created_at": None,
                            "fetched_at": now, "error": None, "missing": True}
                 else:
                     times = s.get("time") or {}
@@ -645,11 +649,19 @@ class WebServer:
                     if not isinstance(title, str) or not title.strip():
                         title = None
                     ent = {"title": title, "created_at": created,
-                           "active": sid in active,
                            "fetched_at": now, "error": None, "missing": False}
                 self._coord_meta[sid] = ent
                 out[sid] = ent
-            return out
+            # 大量标题首次读取可能较慢，返回前保证执行状态仍是近期采样。
+            return out, self._coord_activity(client) if to_fetch else active
+
+    @staticmethod
+    def _session_run_state(sid: str, active: dict | None, metadata_fresh: bool) -> str:
+        if active is None:
+            return "unknown"
+        if sid in active:
+            return "running" if active[sid].get("type") == "running" else "unknown"
+        return "inactive" if metadata_fresh else "unknown"
 
     def _coordinator_discovery(self) -> dict:
         """只读发现全量已知调度者候选集合及全量任务/租约/通知事实。"""
@@ -697,25 +709,31 @@ class WebServer:
                    stalled: bool) -> tuple[int, str]:
         """最高优先关注原因（rank 越小越优先）。"""
         worst: list[tuple[int, str]] = []
+        gate_labels = {
+            "exhausted": "重试次数已用完", "probe-unknown": "探测结果未知",
+            "blocked-unknown": "阻塞原因未知", "cooling": "调度正在冷却", "blocked": "调度暂时受阻",
+        }
         for g in gates:
             st = g.get("state")
             if st == "manual-blocked":
-                worst.append((0, f"闸门人工阻塞（{st}）— 需 manual 解锁"))
+                worst.append((0, "等待人工解除调度限制"))
             elif st in ("exhausted", "probe-unknown", "blocked-unknown"):
-                worst.append((1, f"目标闸门 {st}"))
+                worst.append((1, gate_labels[st]))
             elif st in ("cooling", "blocked"):
-                worst.append((2, f"目标闸门 {st}"))
+                worst.append((2, gate_labels[st]))
         for t in tasks:
-            if t.get("status") in ("blocked",):
-                worst.append((2, f"任务 {t['id']} 受阻"))
+            title = t.get("title") or t["id"]
+            if t.get("status") == "blocked":
+                reason = t.get("blocked_reason")
+                worst.append((2, f"{title} · {reason or '任务受阻'}"))
             elif t.get("status") in ("stalled",):
-                worst.append((2, f"任务 {t['id']} 停滞"))
+                worst.append((2, f"{title} · 进展停滞"))
             elif t.get("status") == "result_pending":
-                worst.append((3, f"任务 {t['id']} 待收集/验收"))
+                worst.append((3, f"{title} · 等待收集或验收"))
         if pending_notes > 0:
-            worst.append((4, f"{pending_notes} 条通知待 ACK/待投递"))
+            worst.append((4, f"{pending_notes} 条通知等待投递或确认"))
         if stalled:
-            worst.append((5, "租约失败待恢复"))
+            worst.append((5, "项目租约等待恢复"))
         if not worst:
             return (6, "无待办关注")
         worst.sort(key=lambda x: x[0])
@@ -741,10 +759,10 @@ class WebServer:
         entries: dict[str, dict] = {}
         try:
             client = self._coord_client()
-            meta = self._coord_meta_ensure(client, sids, now)
+            meta, active = self._coord_meta_ensure(client, sids, now)
             meta_ok = True
         except Exception as e:  # 构造失败/全局失败：全部视为未知，不重排
-            meta = {}
+            meta, active = {}, None
             meta_error = f"{type(e).__name__}: {str(e)[:160]}"
         for sid in sids:
             ent = meta.get(sid) or {}
@@ -796,7 +814,8 @@ class WebServer:
                 "created_meta_missing": bool(ent.get("missing")),
                 "created_meta_stale": created_stale,
                 "metadata_fresh": fresh,
-                "online": ent.get("active") if fresh else None,  # stale 时归未知
+                "online": sid in active if fresh and active is not None else None,
+                "session_run_state": self._session_run_state(sid, active, fresh),
                 "projects": sorted({t.get("project") for t in owns
                                     if t.get("project")}
                                    | {l.get("project") for l in d["leases_all"]
@@ -816,6 +835,7 @@ class WebServer:
                 } for g in gates],
                 "counts": {
                     "unfinished": len(unfinished),
+                    "running": sum(t.get("status") == "running" for t in unfinished),
                     "awaiting_verification": len(awaiting),
                     "blocked": len(blocked),
                     "accepted": len(accepted),

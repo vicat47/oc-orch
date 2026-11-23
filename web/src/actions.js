@@ -11,7 +11,7 @@ import {submitPolicy, recheckPolicy, rememberPolicyInput} from "./policy-actions
 import {conversationAction} from "./operator-actions.js";
 import {rememberPrototypeInput, submitPrototype, recheckPrototype} from "./prototype-actions.js";
 
-const RO_TOAST = "read-only：此操作被后端拒绝（当前为只读快照）";
+const RO_TOAST = "当前为只读模式";
 
 // 写动作包装：ro 检查 + busy 去重 + 失败不重投。
 async function guard(key, fn) {
@@ -22,7 +22,7 @@ async function guard(key, fn) {
   try {
     await fn();
   } catch (error) {
-    toast(error.message || "操作失败（未重试，请手动重试）");
+    toast(error.message || "操作失败，请查看最新状态");
   } finally {
     state.busyActions.delete(key);
     publish();
@@ -57,7 +57,7 @@ function taskCancel(id) {
     if (reason === null) return;
     const c = prompt(`输入任务 ID 确认取消：${id}`);
     if (c !== id) { alert("确认不匹配"); return; }
-    const interrupt = confirm("同时尝试 interrupt 执行 session？");
+    const interrupt = confirm("同时请求中断执行会话？");
     await post(`/api/task/${encodeURIComponent(id)}/cancel`, {reason, confirm: c, interrupt});
     toast("已取消");
     await refreshLight();
@@ -66,7 +66,7 @@ function taskCancel(id) {
 
 function collect(id) {
   guard(`collect:${id}`, async () => {
-    if (!confirm(`collect ${id}？`)) return;
+    if (!confirm(`收集本次尝试的结果？\n${id}`)) return;
     await post(`/api/attempt/${encodeURIComponent(id)}/collect`, {});
     toast("已收集");
     await refreshLight();
@@ -118,10 +118,10 @@ function closeVerify(el) {
 function unlock(sid, project, allowProvider) {
   guard(`unlock:${sid}`, async () => {
     if (!sid) return;
-    const label = allowProvider ? "恢复调度" : "解锁 manual";
-    const reason = prompt(`解锁原因（${label}）`, allowProvider ? "web-provider-recovery" : "web-manual-unlock");
+    const label = allowProvider ? "恢复调度" : "解除人工阻塞";
+    const reason = prompt(`请填写${label}的原因`, allowProvider ? "web-provider-recovery" : "web-manual-unlock");
     if (reason === null) return;
-    const c = prompt(`输入 UNLOCK 确认（${label} ${sid}，项目 ${project || "?"}）`);
+    const c = prompt(`${label} · ${sid}\n项目 ${project || "?"}\n输入 UNLOCK 确认`);
     if (c !== "UNLOCK") { alert("确认不匹配"); return; }
     const payload = { project, session: sid, reason, confirm: "UNLOCK" };
     if (allowProvider) payload.allow_provider = true;
@@ -134,9 +134,9 @@ function unlock(sid, project, allowProvider) {
 
 function ackNote(id) {
   guard(`acknote:${id}`, async () => {
-    if (!id || !confirm(`ACK 通知 ${id}？`)) return;
+    if (!id || !confirm(`确认收到通知 ${id}？`)) return;
     await post("/api/notify/ack", {ids: [id]});
-    toast("已 ACK");
+    toast("已确认收到");
     await refreshLight();
   });
 }
@@ -152,14 +152,14 @@ function ackChecked(scopeSel, url) {
   // 集合全量列出（快照通知/告警 ≤50 条），不缩略为“前 8 条”。
   const list = ids.join("\n");
   const kind = url.endsWith("/notify/ack") ? "通知" : "告警";
-  if (!confirm(`批量 ACK ${ids.length} 条${kind}？\n集合（共 ${ids.length} 条）：\n${list}`)) return;
+  if (!confirm(`确认所选的 ${ids.length} 条${kind}？\n${list}`)) return;
   if (state.busyActions.has(lock)) return;
   state.busyActions.add(lock);
   publish();
   (async () => {
     try {
       await post(url, {ids});
-      toast(`已 ACK ${ids.length} 条`);
+      toast(`已确认 ${ids.length} 条`);
       await refreshLight();
     } catch (error) {
       toast(error.message || "操作失败");
@@ -491,7 +491,7 @@ function sendInput(form) {
   (async () => {
     try {
       await post("/api/input/send", body);
-      toast("已发送（受理 ≠ 投递 ≠ 执行 ≠ 业务 ACK）");
+      toast("指令已受理，可在记录中查看投递进度。");
       // 快照守卫：仅当原表单仍在文档且各字段值未变才 reset。
       if (form.isConnected) {
         const cur = new FormData(form);

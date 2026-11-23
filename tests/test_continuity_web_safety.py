@@ -427,7 +427,7 @@ test("健康截断+多项目：详情全量 projects=[p,q] 时不显示任何写
   await waitFor(() => h.el.textContent.includes("业务健康"), {{timeout: 6000}});
   const btns = [...h.document.querySelectorAll('[data-act="projpause"], [data-act="projresume"]')];
   assert.equal(btns.length, 0, "多项目（健康截断只显示其一）不得出现默认写按钮");
-  assert.match(h.el.textContent, /多项目关联[：:]/,
+  assert.match(h.el.textContent, /负责多个项目/,
                "应明确提示多项目不猜测目标项目");
 }});
 

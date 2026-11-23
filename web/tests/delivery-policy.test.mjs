@@ -31,8 +31,8 @@ test("草案与原型/费用/在途边界可见，未提供覆盖不伪报启用
   const {h} = await ready(routesFor());
   assert.match(h.el.textContent, /运行时守卫尚未启用/);
   assert.match(h.el.textContent, /共用协调者费用独立/);
-  assert.match(h.el.textContent, /不降低既有验收/);
-  assert.match(h.el.textContent, /仅影响后续新任务/);
+  assert.match(h.el.textContent, /按既定标准验收/);
+  assert.match(h.el.textContent, /新任务的项目默认策略/);
 });
 
 test("确认逐字匹配、取消不POST；预算/阶段和三个上限独立提交", async () => {
@@ -109,7 +109,7 @@ test("旧版在途即使交接过期仍显示可能付费，不误报停止或�
     inflight: {total: 1, items: [{attempt_id: "A-old", message_id: "msg_original", policy_revision: 1,
       model: "fixture/paid", cost: "paid", issued_at: 1, older_policy: true}]}})});
   const {h} = await ready(routes);
-  assert.match(h.el.textContent, /旧策略过渡中/);
+  assert.match(h.el.textContent, /使用旧策略/);
   assert.match(h.el.textContent, /msg_original/);
   assert.match(h.el.textContent, /不承诺撤回\/退费/);
 });

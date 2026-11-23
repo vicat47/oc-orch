@@ -18,14 +18,14 @@ export function renderVerifyForm(key) {
   const draft = state.verifyDrafts.get(key) || {};
   const v = name => draft[name] ?? "";
   return keyed(`${attemptId}:${pass ? 1 : 0}`, html`<form data-form="verify" data-key=${key} data-id=${attemptId} data-pass=${pass ? 1 : 0} class="card">
-    <legend>验收 ${pass ? "pass" : "fail"}：<code class="mono">${attemptId}</code></legend>
-    <label>证据（分号分隔，可留空）：<input type="text" name="evidence" .value=${v("evidence")} ?disabled=${locked}></label>
-    <label>备注（可选）：<input type="text" name="notes" .value=${v("notes")} ?disabled=${locked}></label>
-    <label>${pass ? "备注原因（可选；标准验收，不启用 force）：" : "失败原因（必填）："}<input type="text" name="reason" .value=${v("reason")} ?required=${!pass} ?disabled=${locked}></label>
+    <legend>${pass ? "通过验收" : "验收不通过"} · <code class="mono">${attemptId}</code></legend>
+    <label>证据路径，多个用英文分号隔开<input type="text" name="evidence" .value=${v("evidence")} ?disabled=${locked}></label>
+    <label>备注 · 可选<input type="text" name="notes" .value=${v("notes")} ?disabled=${locked}></label>
+    <label>${pass ? "通过原因 · 可选" : "未通过原因 · 必填"}<input type="text" name="reason" .value=${v("reason")} ?required=${!pass} ?disabled=${locked}></label>
     <div class="note">${verifySubmissionNote}</div>
-    <label><input type="checkbox" name="run_checks" ?disabled=${locked}> 先运行 --check 验收命令</label>
+    <label><input type="checkbox" name="run_checks" ?disabled=${locked}> 提交前运行验收检查</label>
     <label>确认：输入尝试 ID <input type="text" name="confirm" placeholder=${attemptId} .value=${v("confirm")} required ?disabled=${locked}></label>
-    <div class="op-panel"><button class="primary" type="submit" ?disabled=${locked}>提交验收 ${pass ? "pass" : "fail"}</button><button type="button" data-act="closeverify" data-key=${key}>取消</button></div>
+    <div class="op-panel"><button class="primary" type="submit" ?disabled=${locked}>${pass ? "确认通过验收" : "确认验收不通过"}</button><button type="button" data-act="closeverify" data-key=${key}>取消</button></div>
   </form>`);
 }
 // 返工表单：工作模式只影响 prompt；确认逐字回填任务 ID；提交由 app 唯一委托。
@@ -33,13 +33,13 @@ export function renderReworkForm(taskId) {
   const locked = ro();
   return html`<form data-form="rework" data-id=${taskId} class="card">
     <legend>返工/继续：<code class="mono">${taskId}</code></legend>
-    <label>反馈（必填）<textarea name="feedback" required ?disabled=${locked}></textarea></label>
+    <label>返工要求 · 必填<textarea name="feedback" required ?disabled=${locked}></textarea></label>
     <label>工作模式<select name="work_mode" ?disabled=${locked}>
-      <option value="latency-first">latency-first / fast（时效优先，默认）</option>
-      <option value="budget-first">budget-first / budget（预算优先）</option>
-      <option value="elastic">elastic（弹性加速）</option>
+      <option value="latency-first">时效优先</option>
+      <option value="budget-first">预算优先</option>
+      <option value="elastic">弹性加速</option>
     </select></label>
-    <div class="note">工作模式只写入提示词，不改变模型/资源/费用授权；高风险任务仍按验收标准执行。</div>
+    <div class="note">工作模式用于指导本次返工。模型和费用按现有授权执行。</div>
     <label>确认：输入任务 ID <input type="text" name="confirm" placeholder=${taskId} required ?disabled=${locked}></label>
     <div class="op-panel"><button class="primary" type="submit" ?disabled=${locked}>提交返工</button></div>
   </form>`;

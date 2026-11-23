@@ -62,8 +62,7 @@ class _MetaClient:
         self.active_calls += 1
         if self.fail_active:
             raise OSError("active-unknown")
-        return {sid: s for sid, s in self.sessions.items()
-                if s.get("active")}
+        return {sid: {"type": "running"} for sid, s in self.sessions.items() if s.get("active")}
 
     def get_session(self, session_id):
         self.get_calls += 1
@@ -152,6 +151,31 @@ class TestOverviewStableOrdering(CoordinatorWebBase):
         self.assertEqual(client.active_calls, 1)
 
 
+    def test_session_run_state_tracks_active_snapshot_before_metadata_ttl(self):
+        client = self._seed_sessions()
+        self._start(client)
+        def states():
+            return {c["session"]: c["session_run_state"] for c in self._coords()["coordinators"]}
+
+        with patch("oc_orch.entrypoints.web.monotonic") as clock:
+            clock.return_value = 100
+            self.assertEqual(states(), {"ses_old": "running", "ses_middle": "running", "ses_new": "inactive"})
+            client.sessions["ses_old"]["active"] = False
+            client.sessions["ses_new"]["active"] = True
+            clock.return_value += 5
+            self.assertEqual(states(), {"ses_old": "inactive", "ses_middle": "running", "ses_new": "running"})
+            client.fail_active = True
+            clock.return_value += 5
+            self.assertEqual(set(states().values()), {"unknown"})
+            client.fail_active = False
+            clock.return_value += 5
+            with patch.object(client, "active_sessions", return_value={"ses_new": {"type": "other"}}):
+                self.assertEqual(states()["ses_new"], "unknown")
+            clock.return_value += 5
+            self.assertEqual(states()["ses_new"], "running")
+        self.assertEqual(client.get_calls, 3)
+
+
 class TestOrderingFallbacks(CoordinatorWebBase):
     def _seed(self):
         for sid, created in (("ses_known_a", 2_000_000_000),
@@ -233,8 +257,9 @@ class TestOwnershipSemantics(CoordinatorWebBase):
         # T1：无显式绑定 → 按租约归 lease_sid
         t1 = self.ledger.create_task(project=projects[0], title="租约任务")
         # T2/T3：显式绑定到 explicit_sid（同项目 P0，覆盖租约）
-        self.ledger.create_task(project=projects[0], title="显式任务1",
-                                coordinator_session=explicit_sid)
+        running = self.ledger.create_task(project=projects[0], title="显式任务1",
+                                          coordinator_session=explicit_sid)
+        self.ledger.transition_task(running["id"], "running")
         self.ledger.create_task(project=projects[1], title="显式任务2",
                                 coordinator_session=explicit_sid)
         # worker session 只出现在 attempt 上，不是调度者
@@ -260,13 +285,17 @@ class TestOwnershipSemantics(CoordinatorWebBase):
         # explicit 拥有 2 个未终态任务（显式绑定优先于租约）
         self.assertEqual(exp["counts"]["unfinished"], 2)
         self.assertEqual(exp["counts"]["accepted"], 0)
+        self.assertEqual(exp["counts"]["running"], 1)
+        self.assertEqual(exp["session_run_state"], "inactive")
         lease = by_id[lease_sid]
         self.assertEqual(lease["counts"]["unfinished"], 1)
+        self.assertEqual(lease["counts"]["running"], 0)
 
         # 工作台详情：owned_via 区分
         st, body = self.req("/api/coordinator/" + explicit_sid)
         self.assertEqual(st, 200, body)
         detail = json.loads(body)
+        self.assertEqual(detail["coordinator"]["session_run_state"], "inactive")
         self.assertEqual(len(detail["tasks"]), 2)
         self.assertTrue(all(t["owned_via"] == "explicit" for t in detail["tasks"]))
 
@@ -431,7 +460,7 @@ class TestResponsiveStaticAssertions(CoordinatorWebBase):
 
     def test_viewport_media_touch_and_no_global_overflow(self):
         html, css, js = self._assets()
-        combo = "\n".join((html, css, js))
+        combo = "\n".join((html, re.sub(r"\s*([:{}])\s*", r"\1", css), js))
         for needle in (
                 'name="viewport" content="width=device-width, initial-scale=1',
                 "@media (max-width:768px)",
@@ -440,7 +469,7 @@ class TestResponsiveStaticAssertions(CoordinatorWebBase):
                 ".tablewrap{",
                 ":focus-visible{",
                 "body{overflow-x:hidden}",
-                "word-break:break-all",
+                "overflow-wrap:anywhere",
                 "aria-live=",
                 'role="tablist"',
                 "prefers-reduced-motion",
@@ -511,7 +540,7 @@ class TestMetadataFreshnessPerEntry(CoordinatorWebBase):
 
             def active_sessions(self):
                 self.active_calls += 1
-                return {"ses_ok": {"id": "ses_ok", "time": {"created": 1000}, "active": True}}
+                return {"ses_ok": {"type": "running"}}
 
         return _Mixed({})
 
@@ -523,6 +552,8 @@ class TestMetadataFreshnessPerEntry(CoordinatorWebBase):
         ok, bad = by["ses_ok"], by["ses_bad"]
         self.assertTrue(ok["metadata_fresh"])
         self.assertIs(ok["online"], True)
+        self.assertEqual(ok["session_run_state"], "running")
+        self.assertEqual(bad["session_run_state"], "unknown")
         self.assertFalse(bad["metadata_fresh"])
         self.assertTrue(bad["created_meta_error"])
         self.assertIsNone(bad["online"], "失败时不把缓存 active 当最新事实")

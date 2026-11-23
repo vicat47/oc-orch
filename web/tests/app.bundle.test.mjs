@@ -73,7 +73,7 @@ test("打包产物 read_only：写按钮禁用，点击不发请求，读数据�
   const h = await bootBundle(routes, {hash: "#/task/T-1"});
   t.after(() => h.dom.window.close());
   await waitFor(() => h.el.textContent.includes("任务标题"));
-  assert.match(h.el.textContent, /read-only/, "read-only 徽标可见");
+  assert.match(h.el.textContent, /只读/, "read-only 徽标可见");
   for (const act of ["taskpause", "taskcancel", "verify", "collect"]) {
     assert.equal(h.el.querySelector(`[data-act="${act}"]`), null,
                  `read_only 下不得出现写动作 ${act}`);

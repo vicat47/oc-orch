@@ -3,12 +3,12 @@
   "version": "0.1.0",
   "files": {
     "app.js": {
-      "sha256": "7e4530c57955063f34f03fea1cd99f0013a0ff8b10372e88921a34d6dd6a8b48",
-      "size": 167623
+      "sha256": "f9a52989c9a9618c8d67b1d2920ad4b10f3e7176f855af49a1eca9d59bc56305",
+      "size": 167671
     },
     "app.css": {
-      "sha256": "145c8a3a53a4526818f9223c2abad555b4a91144dd3baf2cff733847e20882b3",
-      "size": 8805
+      "sha256": "e18d9977d4251c29e8c3fda7ade2a4acbbf2f750c51e43ad8a3138ec066069b8",
+      "size": 12992
     },
     "index.html": {
       "sha256": "0eb41d3e175107a66a12e5ccbcef0d6baad2e62f0a39340d6de2ab8d81385bf7",

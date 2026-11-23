@@ -80,7 +80,7 @@ test("跨对象隔离：任务 A 的验收表单值不残留到任务 B", async 
                "A 的表单不得跨对象残留到 B");
   h.el.querySelector('[data-act="verify"][data-id="A-2"][data-pass="0"]').click();
   const formB = await waitFor(() => h.document.querySelector('form[data-form="verify"]'));
-  assert.ok(formB.textContent.includes("验收 fail"), "B 显示 fail 表单");
+  assert.ok(formB.textContent.includes("验收不通过"), "B 显示 fail 表单");
   assert.equal(formB.querySelector('[name="evidence"]').value, "",
                "B 的表单不得带 A 的旧值");
 });

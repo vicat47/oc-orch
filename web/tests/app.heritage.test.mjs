@@ -68,7 +68,7 @@ test("身份标注：notify-only 空标题不得称未命名调度者，confirme
   const text = h.el.textContent;
   assert.ok(text.includes("仅通知关联 · 调度者角色未确认"),
             "notify-only 必须以角色未确认标注");
-  assert.ok(text.includes("通知关联会话（未确认调度者）"),
+  assert.ok(h.el.querySelector('[data-key="coordinator:ses_n"] h3').textContent === "通知关联会话",
             "notify-only 空标题不得称未命名调度者");
   assert.ok(text.includes("已关联调度者"), "task 来源显示已关联调度者");
   assert.ok(!text.includes("未命名调度者"), "本页不存在未命名调度者字样");

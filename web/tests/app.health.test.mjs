@@ -95,8 +95,8 @@ test("工作台健康：业务健康表渲染（owner/next/期限/预算/证据/
   assert.ok(text.includes("ses_x"), "owner 展示");
   assert.ok(text.includes("登记责任"), "下一动作展示（任务级）");
   assert.ok(text.includes("1/3"), "预算 budget 展示");
-  assert.ok(text.includes("进程 healthy"), "进程健康展示");
-  assert.ok(text.includes("进程健康 ≠ 业务进展/完成"), "语义提示");
+  assert.ok(text.includes("进程正常"), "进程健康展示");
+  assert.ok(text.includes("任务完成以验收结论为准"), "语义提示");
   assert.ok(text.includes("邮件默认关闭"), "health.runtime 邮件默认关闭提示");
   assert.ok(text.includes("native 对话未启用"), "health.runtime native 提示");
 });
@@ -171,7 +171,7 @@ test("工作台健康：多项目关联不猜测，不显示控制按钮", async
   await openHealthTab(hm);
   assert.equal(hm.document.querySelector('[data-act="projpause"]'), null, "多项目不猜测");
   assert.equal(hm.document.querySelector('[data-act="projresume"]'), null, "多项目不猜测");
-  assert.ok(hm.el.textContent.includes("多项目关联"), "给出不猜测说明");
+  assert.ok(hm.el.textContent.includes("负责多个项目"), "给出不猜测说明");
 });
 
 test("工作台健康：无项目不显示控制按钮", async () => {
@@ -180,7 +180,7 @@ test("工作台健康：无项目不显示控制按钮", async () => {
   await openHealthTab(hn);
   assert.equal(hn.document.querySelector('[data-act="projpause"]'), null, "无项目不显示");
   assert.equal(hn.document.querySelector('[data-act="projresume"]'), null, "无项目不显示");
-  assert.ok(hn.el.textContent.includes("没有可归属项目"), "给出不显示说明");
+  assert.ok(hn.el.textContent.includes("尚未关联项目"), "给出不显示说明");
 });
 
 test("read_only 下健康表不显示任何写按钮", async () => {
@@ -225,7 +225,7 @@ test("诊断 incidents：owner/next_action/channel 展示且只读（无 reconci
   const text = h.el.textContent;
   assert.ok(text.includes("确认 owner"), "next_action 展示");
   assert.ok(text.includes("operator"), "owner 展示");
-  assert.ok(text.includes("not-configured"), "通道状态展示");
+  assert.ok(text.includes("提醒渠道 未配置"), "通道状态展示");
   assert.ok(text.includes("邮件默认关闭"), "邮件默认关闭提示");
   assert.equal(routes.count((c) => c.method === "POST"), 0, "只读不 reconcile/不发送");
 });
@@ -274,5 +274,5 @@ test("打包产物：诊断页包含业务健康与本地人工待办区块（bu
   const h = await bootBundle(routes, {hash: "#/diagnostics"});
   await waitFor(() => h.el.textContent.includes("业务健康"), {timeout: 8000});
   assert.ok(h.el.textContent.includes("本地人工待办"), "bundle 应有 incidents 区块");
-  assert.ok(h.el.textContent.includes("进程健康 ≠ 业务进展/完成"));
+  assert.ok(h.el.textContent.includes("任务完成以验收结论为准"));
 });

@@ -176,7 +176,7 @@ async function qaViewport(vp) {
     await page.goto(BASE + "/", {waitUntil: "domcontentloaded"});
     await waitSel("#overviewRoot .grid-cards .card");
     const healthText = await page.textContent("#health");
-    ok("总览健康条 Supervisor healthy", healthText.includes("Supervisor healthy"), healthText.slice(0, 60));
+    ok("总览健康条 调度服务正常", healthText.includes("调度服务正常"), healthText.slice(0, 60));
     const ov = await noOverflow();
     ok("总览无全局横滚溢出", !ov.over, `sw=${ov.sw} cw=${ov.cw}`);
     const longCard = await page.locator(`#overviewRoot [data-key="coordinator:${LONG_SID}"]`).count();

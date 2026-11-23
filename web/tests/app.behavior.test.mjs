@@ -33,8 +33,8 @@ function coordinatorDetail(sid, overrides = {}) {
 test("总览：按稳定 key 渲染，刷新更新数据不换节点、无加载占位", async () => {
   const routes = baseRoutes();
   routes.get("/api/coordinators", withCoords(
-    coord("ses_a", {title: "甲调度", attention: "关注甲", created_at: 100}),
-    coord("ses_b", {title: "乙调度", attention: "关注乙", created_at: 200}),
+    coord("ses_a", {title: "甲调度", attention: "关注甲", attention_rank: 3, created_at: 100}),
+    coord("ses_b", {title: "乙调度", attention: "关注乙", attention_rank: 3, created_at: 200}),
   ));
   const h = await boot(routes);
 
@@ -44,8 +44,8 @@ test("总览：按稳定 key 渲染，刷新更新数据不换节点、无加载
   assert.ok(h.el.querySelector('[data-key="coordinator:ses_b"]'));
 
   routes.get("/api/coordinators", withCoords(
-    coord("ses_a", {title: "甲调度", attention: "关注甲（已更新）", created_at: 100}),
-    coord("ses_b", {title: "乙调度", attention: "关注乙", created_at: 200}),
+    coord("ses_a", {title: "甲调度", attention: "关注甲（已更新）", attention_rank: 3, created_at: 100}),
+    coord("ses_b", {title: "乙调度", attention: "关注乙", attention_rank: 3, created_at: 200}),
   ));
   await h.refreshLight();
   const cardA2 = await waitFor(() => h.el.querySelector('[data-key="coordinator:ses_a"]'));
@@ -101,9 +101,9 @@ test("验收表单：标准文案、值/焦点/caret 刷新保全、提交 force
   verifyBtn.click();
   const form = await waitFor(() => h.document.querySelector('form[data-form="verify"]'));
   // 标准验收文案：legend 显式 pass，提交按钮与说明不宣称人工 force
-  assert.match(form.querySelector("legend").textContent, /验收 pass.*A-1/);
-  assert.match(form.textContent, /force=false/);
-  assert.match(form.querySelector(".op-panel").textContent, /提交验收 pass/);
+  assert.match(form.querySelector("legend").textContent, /通过验收.*A-1/);
+  assert.match(form.textContent, /按标准验收/);
+  assert.match(form.querySelector(".op-panel").textContent, /确认通过验收/);
 
   const evidence = form.querySelector('[name="evidence"]');
   form.querySelector('[name="confirm"]').value = "A-1";
@@ -167,14 +167,14 @@ test("失败保留旧数据并标过期，恢复后清除标记", async () => {
   await tick();
   assert.equal(h.state.statusErr, true, "失败标志置起");
   assert.ok(h.el.querySelector('[data-key="coordinator:ses_a"]'), "失败必须保留已加载数据");
-  assert.ok(h.el.textContent.includes("部分数据过期/失败"), "失败必须页面可见");
+  assert.ok(h.el.textContent.includes("部分数据过期"), "失败必须页面可见");
   assert.match(h.el.textContent, /(?:状态|调度者|数据)[\s\S]{0,12}前/, "最后成功时间保留展示");
 
   routes.get("/api/status", {ok: true, snapshot: snapshot()});
   await h.refreshLight();
   await tick();
   assert.equal(h.state.statusErr, false, "恢复后错误标志清除");
-  assert.ok(!h.el.textContent.includes("部分数据过期/失败"), "恢复后失败标记消失");
+  assert.ok(!h.el.textContent.includes("部分数据过期"), "恢复后失败标记消失");
 });
 
 test("慢刷新单飞：并发 refreshLight 复用同一轮请求", async () => {
@@ -254,7 +254,7 @@ test("read_only：写控件禁用或隐藏、不发请求，只读诊断仍展�
   const h = await boot(routes, {hash: "#/task/T-1", confirm: true});
 
   await waitFor(() => h.el.textContent.includes("任务标题"));
-  assert.match(h.el.textContent, /read-only/, "read-only 徽标可见");
+  assert.match(h.el.textContent, /只读/, "read-only 徽标可见");
   for (const act of ["taskpause", "taskcancel", "verify", "collect", "taskresume"]) {
     assert.equal(h.el.querySelector(`[data-act="${act}"]`), null,
                  `read_only 任务视图不得出现写动作 ${act}`);
@@ -358,18 +358,42 @@ test("诊断表格行合法：tbody 子元素为有效 tr，不出现非法 div/
   }
 });
 
-test("总览卡片：元数据非 fresh 时不把缓存当最新（不显示在线 active）", async () => {
+test("会话各自显示前台运行状态，刷新失败或离开快照时清除旧标记", async () => {
   const routes = baseRoutes();
-  routes.get("/api/coordinators", withCoords(
-    coord("ses_stale", {title: "过期元数据", online: true, metadata_fresh: false}),
-    coord("ses_ok", {title: "在线调度", online: true, metadata_fresh: true}),
-  ));
+  const a = coord("ses_a", {session_run_state: "running"});
+  const b = coord("ses_b", {session_run_state: "inactive", counts: {running: 2}});
+  const legacy = coord("ses_legacy", {online: true});
+  routes.get("/api/coordinators", withCoords(a, b, legacy));
   const h = await boot(routes);
-  const stale = await waitFor(() => h.el.querySelector('[data-key="coordinator:ses_stale"]'));
-  assert.ok(!stale.textContent.includes("在线 active"), "fresh=false 不得误称在线");
-  assert.ok(stale.textContent.includes("在线状态未知"), "应明确标注在线状态未知");
-  const okCard = h.el.querySelector('[data-key="coordinator:ses_ok"]');
-  assert.ok(okCard.textContent.includes("在线 active"), "fresh 数据可显示在线");
+  const status = sid => h.el.querySelector(`[data-key="coordinator:${sid}"] .session-heading .session-run`)?.textContent;
+  await waitFor(() => status("ses_a") === "运行中");
+  assert.equal(status("ses_b"), "空闲");
+  assert.equal(status("ses_legacy"), "状态未知");
+  routes.get("/api/coordinators", {status: 500, body: {message: "offline"}});
+  await h.refreshLight();
+  await waitFor(() => status("ses_a") === "状态未知");
+  routes.get("/api/coordinators", withCoords({...b, session_run_state: "running"}));
+  await h.refreshLight();
+  await waitFor(() => status("ses_b") === "运行中");
+  assert.equal(status("ses_a"), "状态未知");
+});
+
+test("工作台标题展示当前会话状态，失败后的缓存不会标为运行中", async () => {
+  const routes = baseRoutes();
+  const path = "/api/coordinator/ses_work";
+  const setState = value => routes.get(path, coordinatorDetail("ses_work", {
+    coordinator: coord("ses_work", {session_run_state: value}),
+  }));
+  setState("running");
+  const h = await boot(routes, {hash: "#/coordinator/ses_work"});
+  const status = () => h.el.querySelector(".workspace-heading .session-run")?.textContent;
+  await waitFor(() => status() === "运行中");
+  routes.get(path, {status: 500, body: {message: "offline"}});
+  await h.refreshLight();
+  await waitFor(() => status() === "状态未知");
+  setState("inactive");
+  await h.refreshLight();
+  await waitFor(() => status() === "空闲");
 });
 
 test("分页续页去重：锁定期间连续点击仅一次续页请求", async () => {
@@ -418,4 +442,61 @@ test("打包外壳与 bundle 安全契约（本地资源、无 CDN、无 unsafeH
     assert.ok(manifest.files[file]?.sha256, `manifest 缺少 ${file} 哈希`);
   }
   assert.ok(!("built_at" in manifest), "manifest 不得含时间戳（保持可复现）");
+});
+test("总览摘要与下钻范围一致，确认告警只提交当前列表中的 ID", async () => {
+  const routes = baseRoutes();
+  routes.get("/api/status", {ok: true, snapshot: snapshot({alerts: [
+    {id: "G-1", title: "全局提醒"}, {id: "A-1", attempt_id: "attempt", title: "尝试提醒"},
+  ]})});
+  routes.get("/api/coordinators", withCoords(coord("ses_owner")));
+  routes.get("/api/responsibilities?limit=200", {responsibilities: [
+    {id: "R-other", owner: "operator"}, {id: "R-owned", owner: "ses_owner"},
+  ]});
+  routes.post("/api/alerts/ack", {ok: true});
+  const h = await boot(routes, {confirm: true});
+  const metric = section => h.el.querySelector(`.summary-band a[href="#/diagnostics/${section}"]`);
+  await waitFor(() => metric("responsibilities")?.querySelector("strong").textContent === "1");
+  assert.equal(metric("alerts").querySelector("strong").textContent, "1");
+  metric("responsibilities").click();
+  const rows = await waitFor(() => h.el.querySelector("#respBody"));
+  assert.match(rows.textContent, /R-other/);
+  assert.doesNotMatch(rows.textContent, /R-owned/);
+  h.window.location.hash = "#/";
+  await waitFor(() => metric("alerts"));
+  metric("alerts").click();
+  const ack = await waitFor(() => h.el.querySelector('[data-act="ackalerts"]'));
+  assert.deepEqual([...h.el.querySelectorAll(".alck")].map(el => el.dataset.id), ["G-1"]);
+  ack.click();
+  await waitFor(() => routes.count(c => c.method === "POST") === 1);
+  assert.deepEqual(JSON.parse(routes.calls(c => c.method === "POST")[0].init.body).ids, ["G-1"]);
+});
+
+test("页首显示调度进程与连接，重试和旧快照有明确标记", async () => {
+  const routes = baseRoutes();
+  const sup = {alive: true, healthy: true, connected: true, stream: {backoff: 0}};
+  const setStatus = supervisor => routes.get("/api/status", {ok: true, snapshot: snapshot({supervisor})});
+  setStatus(sup);
+  const h = await boot(routes);
+  const process = () => h.el.querySelector("#health summary .presence")?.textContent;
+  const connection = () => [...h.el.querySelectorAll("#health dt")].find(dt => dt.textContent === "事件连接")?.nextElementSibling?.textContent;
+  await waitFor(() => process() === "调度服务正常");
+  assert.equal(connection(), "已连接");
+  setStatus({...sup, stream: {backoff: 4}});
+  await h.refreshLight();
+  await waitFor(() => connection() === "正在重试");
+  setStatus({...sup, alive: false, healthy: false});
+  await h.refreshLight();
+  await waitFor(() => process() === "调度服务未检测到进程");
+  assert.equal(connection(), "未连接");
+  setStatus({alive: true, healthy: false});
+  await h.refreshLight();
+  await waitFor(() => process() === "调度服务心跳异常");
+  assert.equal(connection(), "未知");
+  setStatus({healthy: true, connected: true});
+  await h.refreshLight();
+  await waitFor(() => connection() === "曾建立连接");
+  routes.get("/api/status", {status: 500, body: {message: "offline"}});
+  await h.refreshLight();
+  await waitFor(() => process() === "调度服务待更新");
+  assert.equal(connection(), "待更新");
 });

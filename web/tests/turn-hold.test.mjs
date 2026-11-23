@@ -91,10 +91,10 @@ test("运维强制解除需要项目确认与 RESUME，并发送当前版本", a
 test("有用户回合屏障时只展示，不显示解除/登记入口", async () => {
   const routes = routesFor({barrier: {message_id: "msg_turn", origin_at: 1010}});
   const h = await ready(routes, () => null,
-    h => h.el.textContent.includes("用户回合屏障"));
+    h => h.el.textContent.includes("正在等待用户回合结束"));
   assert.equal(h.el.querySelector('[data-act="checkturn"]'), null);
   assert.equal(h.el.querySelector('[data-act="releasehold"]'), null);
-  assert.match(h.el.textContent, /用户回合屏障/);
+  assert.match(h.el.textContent, /正在等待用户回合结束/);
 });
 
 test("控制状态不可读时不显示写入口", async () => {

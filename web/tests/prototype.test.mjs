@@ -37,10 +37,10 @@ test("P17/P18代表路径可点，mock/占位/受阻有反馈，零业务POST与
     h.el.querySelector(`[data-feature="${id}"]`).click();
     const panel = await waitFor(() => h.el.querySelector('[data-prototype-detail]'));
     await tick();
-    assert.match(panel.textContent, /不调用业务API或伪报保存成功/);
+    assert.match(panel.textContent, /这里只展示计划/);
     assert.match(panel.textContent, /gap-1/);
   }
-  assert.match(h.el.textContent, /计划\/菜单可点≠检查通过/);
+  assert.match(h.el.textContent, /检查结果和修复证据见任务验收/);
   assert.match(h.el.textContent, /实现并联调/);
   assert.equal(routes.calls(c => c.method === "POST").length, 0);
 });
@@ -85,6 +85,6 @@ test("损坏/不可读记录显示明确错误，不误当空清单或可写模�
   const h = await boot(routesFor({ok: false, code: "PROTOTYPE_CORRUPT"}), {hash: "#/task/T-prototype"});
   h.window.dispatchEvent(new h.window.Event("hashchange"));
   await waitFor(() => h.el.textContent.includes("PROTOTYPE_CORRUPT"));
-  assert.match(h.el.textContent, /不是空清单/);
+  assert.match(h.el.textContent, /恢复读取后可编辑/);
   assert.equal(h.el.querySelector('form[data-form="prototype"]'), null);
 });

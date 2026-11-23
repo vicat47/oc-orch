@@ -9,7 +9,7 @@ import * as tasksView from "./views/tasks.js";
 import * as diagnosticsView from "./views/diagnostics.js";
 import {state, subscribe, ro} from "./state.js";
 import {parseHash, routeKey, needDetail, navigate, restoreNavigation} from "./router.js";
-import {fmtAge} from "./ui.js";
+import {fmtAge, processStatus, connectionStatus} from "./ui.js";
 import * as data from "./data.js";
 import * as actions from "./actions.js";
 
@@ -172,7 +172,7 @@ export class OcOrchApp extends LitElement {
 
   diagnosticsBody(route) {
     if (!state.snap && !state.statusErr) return loadingPanel(VIEW_LABEL.diagnostics);
-    return html`${errorBanner(state.extraErr || state.statusErr)}${diagnosticsView.renderDiagnostics()}`;
+    return html`${errorBanner(state.extraErr || state.statusErr || (route.section === "responsibilities" && state.coordErr))}${diagnosticsView.renderDiagnostics(route.section)}`;
   }
 
   detailBody(route, renderFn) {
@@ -194,41 +194,39 @@ export class OcOrchApp extends LitElement {
   }
 
   headerTemplate(route) {
-    const navId = route.view === "tasks" || route.view === "coordinator"
-      ? "tasks" : route.view === "diagnostics" ? "diagnostics" : "overview";
+    const navId = ["tasks", "task", "attempt"].includes(route.view) ? "tasks" : route.view === "diagnostics" ? "diagnostics" : "overview";
     return html`
-      <h1><a href="#/" aria-label="返回调度总览">oc-orch 控制面</a></h1>
+      <h1><a class="brand" href="#/" aria-label="返回调度总览"><span class="brand-mark" aria-hidden="true"></span>oc-orch</a></h1>
       <nav id="nav" aria-label="主导航">
-        <a href="#/" data-nav="overview" aria-current=${route.view === "overview" ? "page" : nothing}>总览</a>
+        <a href="#/" data-nav="overview" aria-current=${navId === "overview" ? "page" : nothing}>总览</a>
         <a href="#/tasks" data-nav="tasks" aria-current=${navId === "tasks" ? "page" : nothing}>全局任务</a>
         <a href="#/diagnostics" data-nav="diagnostics" aria-current=${route.view === "diagnostics" ? "page" : nothing}>系统诊断</a>
       </nav>
-      <span class="spacer"></span>
+      <div class="header-tools">
       ${this.healthTemplate()}
       <label class="inline" title="5 秒自动刷新"><input type="checkbox" id="auto" ?checked=${state.auto}> 自动刷新</label>
       <button id="refreshBtn" data-act="manualrefresh" ?disabled=${state.refreshing || state.busyActions.has("manualrefresh")}>
         ${state.refreshing ? "刷新中…" : "刷新"}
-      </button>
+      </button></div>
     `;
   }
 
   healthTemplate() {
     const s = state.snap?.supervisor || {};
     const svc = state.snap?.service || {};
-    const parts = [];
-    if (s.healthy == null) {
-      parts.push(html`连接中…`);
-    } else if (s.healthy) {
-      parts.push(html`<span class="ok">Supervisor healthy</span> ${s.pid ?? "-"} connected=${s.connected ?? "-"}`);
-    } else {
-      parts.push(html`<span class="bad">Supervisor unhealthy</span>`);
-    }
+    const process = processStatus(s, state.statusErr);
     const anyErr = state.statusErr || state.coordErr || state.extraErr || Object.keys(state.errors).length > 0;
-    if (anyErr) parts.push(html`<span class="warn">（部分数据过期/失败）</span>`);
-    if (state.snap) parts.push(html`<span class="muted">状态 ${fmtAge(Date.now() - state.statusAt)}前 · 调度者 ${fmtAge(Date.now() - state.coordAt)}前</span>`);
-    if (ro()) parts.push(html`<span class="badge b-blocked">read-only</span>`);
-    if (svc.base) parts.push(html`<span class="muted">${svc.base}${svc.version ? html` v${svc.version}` : ""}</span>`);
-    return html`<span id="health" class="muted">${parts}</span>`;
+    return html`<details id="health">
+      <summary><span class=${`presence ${process.tone}`}>调度服务${process.text}</span>
+        ${anyErr ? html`<span class="warn">部分数据过期</span>` : nothing}
+        ${ro() ? html`<span class="badge">只读</span>` : nothing}</summary>
+      <dl class="kv health-detail">
+        <dt>状态更新</dt><dd>${state.statusAt ? fmtAge(Date.now() - state.statusAt) + "前" : "尚未读取"}</dd>
+        <dt>会话更新</dt><dd>${state.coordAt ? fmtAge(Date.now() - state.coordAt) + "前" : "尚未读取"}</dd>
+        <dt>进程 ID</dt><dd>${s.pid ?? "未知"}</dd>
+        <dt>事件连接</dt><dd>${connectionStatus(s, state.statusErr)}</dd>
+        ${svc.base ? html`<dt>服务地址</dt><dd>${svc.base} ${svc.version || ""}</dd>` : nothing}
+      </dl></details>`;
   }
 }
 
@@ -243,12 +241,12 @@ function staleBanner(entry) {
 }
 function loadFailedPanel(error) {
   return html`<h2>加载失败</h2>
-    <div class="attn rank-high"><span>无法读取详情：${error?.message || "网络或服务错误"}（请重试或 <a href="#/">返回总览</a>）。<button data-act="manualrefresh">重试</button></span></div>`;
+    <div class="attn rank-high"><span>无法读取详情：${error?.message || "网络或服务错误"} <button data-act="manualrefresh">重试</button> <a href="#/">返回总览</a></span></div>`;
 }
 function missingPanel(route) {
   const text = route.view === "coordinator"
-    ? `对象不在当前发现范围（可能已停用/解绑/通知已结清）：${route.sid}`
-    : `对象不存在（已关闭或从未登记）：${route.id}`;
+    ? `当前列表中找不到该会话：${route.sid}`
+    : `找不到该记录：${route.id}`;
   return html`<h2>${VIEW_LABEL[route.view] || "详情"}</h2>
     <div class="attn rank-high"><span>${text}。<a href="#/">返回总览</a> · <a href="#/tasks">全局任务</a></span></div>`;
 }

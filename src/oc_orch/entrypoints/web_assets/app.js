@@ -783,15 +783,101 @@ function mergeRows(previous = [], incoming = []) {
 
 // src/ui.js
 var $2 = (id) => document.getElementById(id);
-var ts = (value) => value ? new Date(value).toLocaleString() : "-";
-var badge = (value) => b2`<span class=${`badge b-${value || "unknown"}`}>${value || "unknown"}</span>`;
+var ts = (value) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "-";
+var labels = new Map(Object.entries({
+  running: "\u6267\u884C\u4E2D",
+  draft: "\u8349\u7A3F",
+  pending: "\u5F85\u5904\u7406",
+  assigned: "\u5DF2\u5206\u914D",
+  paused: "\u5DF2\u6682\u505C",
+  blocked: "\u53D7\u963B",
+  stalled: "\u8FDB\u5C55\u505C\u6EDE",
+  accepted: "\u5DF2\u9A8C\u6536",
+  cancelled: "\u5DF2\u53D6\u6D88",
+  rejected: "\u672A\u901A\u8FC7",
+  result_pending: "\u5F85\u6536\u96C6\u6216\u9A8C\u6536",
+  result_received: "\u5DF2\u6536\u5230\u7ED3\u679C",
+  result_collected: "\u5DF2\u6536\u96C6\u7ED3\u679C",
+  result_missing: "\u7F3A\u5C11\u7ED3\u679C",
+  terminal_succeeded: "\u6267\u884C\u6210\u529F",
+  terminal_failed: "\u6267\u884C\u5931\u8D25",
+  terminal_interrupted: "\u6267\u884C\u4E2D\u65AD",
+  verification_failed: "\u9A8C\u6536\u672A\u901A\u8FC7",
+  pass: "\u901A\u8FC7",
+  fail: "\u672A\u901A\u8FC7",
+  unknown: "\u672A\u77E5",
+  dispatched: "\u5DF2\u6D3E\u5355",
+  queued: "\u5DF2\u6392\u961F",
+  sent: "\u5DF2\u53D1\u9001",
+  inflight: "\u53D1\u9001\u4E2D",
+  acked: "\u5DF2\u786E\u8BA4\u6536\u5230",
+  creating: "\u521B\u5EFA\u4E2D",
+  dispatch_unknown: "\u6D3E\u5355\u7ED3\u679C\u672A\u77E5",
+  blocked_permission: "\u7B49\u5F85\u6743\u9650",
+  blocked_form: "\u7B49\u5F85\u586B\u5199\u8868\u5355",
+  provider_retry: "\u7B49\u5F85\u670D\u52A1\u5546\u91CD\u8BD5",
+  idle_unconfirmed: "\u7A7A\u95F2\u5F85\u786E\u8BA4",
+  stop_requested: "\u5DF2\u8BF7\u6C42\u505C\u6B62",
+  lost: "\u5931\u53BB\u8054\u7CFB",
+  awaiting_review: "\u5F85\u590D\u6838",
+  processing: "\u5904\u7406\u4E2D",
+  active: "\u6D3B\u52A8\u4E2D",
+  ready: "\u5C31\u7EEA",
+  dispatching: "\u6D3E\u5355\u4E2D",
+  working: "\u6267\u884C\u4E2D",
+  waiting_human: "\u7B49\u5F85\u4EBA\u5DE5\u5904\u7406",
+  waiting_dependency: "\u7B49\u5F85\u4F9D\u8D56",
+  closed: "\u5DF2\u5173\u95ED",
+  delivered: "\u5DF2\u9001\u8FBE",
+  succeeded: "\u6267\u884C\u6210\u529F",
+  acknowledged: "\u5DF2\u786E\u8BA4",
+  unacknowledged: "\u5F85\u786E\u8BA4",
+  admitted: "\u5DF2\u53D7\u7406",
+  recorded: "\u5DF2\u8BB0\u5F55",
+  failed: "\u5931\u8D25",
+  interrupted: "\u5DF2\u4E2D\u65AD",
+  prepared: "\u5DF2\u51C6\u5907",
+  possible: "\u53EF\u80FD\u5DF2\u6267\u884C",
+  "not-applicable": "\u4E0D\u9002\u7528",
+  "manual-blocked": "\u7B49\u5F85\u4EBA\u5DE5\u89E3\u9501",
+  exhausted: "\u91CD\u8BD5\u6B21\u6570\u5DF2\u7528\u5B8C",
+  cooling: "\u51B7\u5374\u4E2D",
+  "probe-unknown": "\u63A2\u6D4B\u7ED3\u679C\u672A\u77E5",
+  "probe-ready": "\u7B49\u5F85\u63A2\u6D4B",
+  "blocked-unknown": "\u963B\u585E\u539F\u56E0\u672A\u77E5"
+}));
+var displayStatus = (value) => labels.get(value) ?? (value || "\u672A\u77E5");
+var badge = (value) => b2`<span class=${`badge b-${value || "unknown"}`}>${displayStatus(value)}</span>`;
+var runLabels = /* @__PURE__ */ new Map([["running", "\u8FD0\u884C\u4E2D"], ["inactive", "\u7A7A\u95F2"], ["unknown", "\u72B6\u6001\u672A\u77E5"]]);
+function sessionRunStatus(c5, stale) {
+  const status = stale || c5.missing_snapshot || !runLabels.has(c5.session_run_state) ? "unknown" : c5.session_run_state;
+  return b2`<span class=${`presence session-run run-${status}`}>${runLabels.get(status)}</span>`;
+}
+function processStatus(s5, stale) {
+  if (stale) return { text: "\u5F85\u66F4\u65B0", tone: "warn" };
+  if (s5.alive === false) return { text: "\u672A\u68C0\u6D4B\u5230\u8FDB\u7A0B", tone: "bad" };
+  if (s5.healthy === true) return { text: "\u6B63\u5E38", tone: "ok" };
+  if (s5.alive === true && s5.healthy === false) return { text: "\u5FC3\u8DF3\u5F02\u5E38", tone: "warn" };
+  if (s5.healthy === false) return { text: "\u5F02\u5E38", tone: "bad" };
+  return { text: "\u72B6\u6001\u672A\u77E5", tone: "muted" };
+}
+function connectionStatus(s5, stale) {
+  if (stale) return "\u5F85\u66F4\u65B0";
+  if (s5.alive === false) return "\u672A\u8FDE\u63A5";
+  if (s5.healthy !== true) return "\u672A\u77E5";
+  const stream = s5.stream || {};
+  if (stream.backoff > 0) return "\u6B63\u5728\u91CD\u8BD5";
+  if (s5.connected === true) return stream.backoff === 0 ? "\u5DF2\u8FDE\u63A5" : "\u66FE\u5EFA\u7ACB\u8FDE\u63A5";
+  if (s5.connected === false && stream.connects > 0) return "\u8FDE\u63A5\u4E2D";
+  return s5.connected === false ? "\u5C1A\u672A\u8FDE\u63A5" : "\u672A\u77E5";
+}
 function fmtAge(ms) {
   if (ms == null || isNaN(Number(ms))) return "-";
   const s5 = Math.max(0, Math.floor(Number(ms) / 1e3));
-  if (s5 < 60) return `${s5}s`;
-  if (s5 < 3600) return `${Math.floor(s5 / 60)}m ${s5 % 60}s`;
-  if (s5 < 86400) return `${Math.floor(s5 / 3600)}h ${Math.floor(s5 / 60) % 60}m`;
-  return `${Math.floor(s5 / 86400)}d`;
+  if (s5 < 60) return `${s5} \u79D2`;
+  if (s5 < 3600) return `${Math.floor(s5 / 60)} \u5206\u949F`;
+  if (s5 < 86400) return `${Math.floor(s5 / 3600)} \u5C0F\u65F6`;
+  return `${Math.floor(s5 / 86400)} \u5929`;
 }
 var toastTimer;
 function toast(message) {
@@ -829,13 +915,13 @@ function markDirty() {
   state.dirtyForm = state.verifyForms.size > 0 || !!document.querySelector('[data-dirty="true"]');
 }
 function gateBadge(gate) {
-  return gate?.state ? b2`<span class=${`badge b-${gate.state === "manual-blocked" ? "expired" : "blocked"}`}>闸门 ${gate.state}${gate.source ? " / " + gate.source : ""}</span>` : A;
+  return gate?.state ? b2`<span class=${`badge b-${gate.state === "manual-blocked" ? "expired" : "blocked"}`}>${displayStatus(gate.state)}</span>` : A;
 }
 function unlockActionFor(coord) {
   const project = (coord.leases || [])[0]?.project || (coord.projects || [])[0];
   if (!project) return null;
   const manual2 = (coord.gates || []).find((g2) => g2.state === "manual-blocked");
-  if (manual2) return { label: "\u89E3\u9501 manual", project, allowProvider: false };
+  if (manual2) return { label: "\u89E3\u9664\u4EBA\u5DE5\u963B\u585E", project, allowProvider: false };
   const blocking = (coord.gates || []).find((g2) => g2.source === "provider" && ["blocked", "exhausted", "probe-unknown"].includes(g2.state));
   if (blocking) return { label: "\u6062\u590D\u8C03\u5EA6", project, allowProvider: true };
   return null;
@@ -845,96 +931,150 @@ function identity(coordinator) {
   const notifyOnly = !confirmed && (coordinator.sources || []).length > 0 && coordinator.sources.every((s5) => s5.startsWith("notify:"));
   return {
     badge: confirmed ? b2`<span class="badge b-valid">已关联调度者</span>` : notifyOnly ? b2`<span class="badge b-blocked">仅通知关联 · 调度者角色未确认</span>` : b2`<span class="badge">身份未知</span>`,
-    name: coordinator.title?.trim() || (notifyOnly ? "\u901A\u77E5\u5173\u8054\u4F1A\u8BDD\uFF08\u672A\u786E\u8BA4\u8C03\u5EA6\u8005\uFF09" : confirmed ? "\u672A\u547D\u540D\u8C03\u5EA6\u8005" : "\u8EAB\u4EFD\u672A\u77E5\u4F1A\u8BDD")
+    name: coordinator.title?.trim() || (notifyOnly ? "\u901A\u77E5\u5173\u8054\u4F1A\u8BDD" : coordinator.session || "\u672A\u547D\u540D\u4F1A\u8BDD")
   };
 }
 var copyButton = (id, label = "\u590D\u5236 ID") => b2`<button class="copy" data-copy=${id} aria-label=${label}>${label}</button>`;
 var busy = (key) => state.busyActions.has(key);
-var verifySubmissionNote = "\u63D0\u4EA4\u6309\u540E\u7AEF\u6807\u51C6\u9A8C\u6536\uFF08force=false\uFF0C\u4E0D\u5BA3\u79F0\u4EBA\u5DE5\u4F8B\u5916\uFF09\uFF1Bpass \u65F6 reason \u4EC5\u4F5C\u5907\u6CE8\uFF0Cfail \u65F6 reason \u5FC5\u586B\u3002";
+var verifySubmissionNote = "\u6309\u6807\u51C6\u9A8C\u6536\uFF0C\u63D0\u4EA4\u65F6\u4F1A\u6838\u5BF9\u4EA4\u4ED8\u8BC1\u636E\u3002";
+var MANAGED_VALUES = {
+  ok: ["delivered", "succeeded", "acknowledged", "admitted", "recorded"],
+  blocked: ["prepared", "possible", "pending", "unknown", "unacknowledged", "not-applicable"],
+  bad: ["cancelled", "failed", "interrupted"]
+};
+function managedBadge(value) {
+  if (value == null || value === "") return b2`<span class="muted">-</span>`;
+  const s5 = String(value);
+  if (MANAGED_VALUES.ok.includes(s5)) return b2`<span class="badge b-valid">${displayStatus(s5)}</span>`;
+  if (MANAGED_VALUES.blocked.includes(s5)) return b2`<span class="badge b-blocked">${displayStatus(s5)}</span>`;
+  if (MANAGED_VALUES.bad.includes(s5)) return b2`<span class="badge b-expired">${displayStatus(s5)}</span>`;
+  return b2`<span class="badge">${displayStatus(s5)}</span>`;
+}
+function watchEnabledBadge(v3) {
+  if (v3 === true) return b2`<span class="badge b-valid">已启用</span>`;
+  if (v3 === false) return b2`<span class="badge b-expired">已停用</span>`;
+  return b2`<span class="muted">-</span>`;
+}
+function obsTrustBadge(v3) {
+  if (v3 === true) return b2`<span class="badge b-valid">可信</span>`;
+  if (v3 === false) return b2`<span class="badge b-expired">未获信任</span>`;
+  return b2`<span class="badge b-blocked">未知</span>`;
+}
+function watchObservation(w2) {
+  const obs = w2.last_observation;
+  if (!obs || typeof obs !== "object" || !Object.keys(obs).length) return b2`<span class="muted">尚无观察记录</span>`;
+  const bits = [
+    b2`待处理 ${obs.pending == null ? "-" : obs.pending}`,
+    b2` · 最长等待 ${obs.oldest_age_ms == null ? "-" : fmtAge(obs.oldest_age_ms)}`,
+    obsTrustBadge(obs.trusted)
+  ];
+  if (obs.aged_out === true) bits.push(b2`<span class="badge b-blocked">已超时</span>`);
+  if (obs.stale === true) bits.push(b2`<span class="badge b-blocked">已过期</span>`);
+  if (obs.blocking_reason != null) bits.push(b2`<span class="muted">受阻原因 ${obs.blocking_reason}</span>`);
+  if (w2.last_observed_at) bits.push(b2`<div class="muted">观察时间 ${ts(w2.last_observed_at)}</div>`);
+  if (obs.next_action) bits.push(b2`<div class="muted">下一步 ${obs.next_action}</div>`);
+  return b2`${bits}`;
+}
 
 // src/views/overview.js
 function coordCard(c5) {
-  const ident = identity(c5), counts = c5.counts || {};
-  const staleTag = c5.created_meta_stale || c5.metadata_fresh === false ? b2` <span class="badge b-blocked">元数据非最新${c5.created_meta_error ? `\uFF08${c5.created_meta_error.split(":")[0]}\uFF09` : ""}</span>` : A;
-  const created = c5.created_at_known ? ts(c5.created_at) : b2`<span class="warn">创建时间未知</span>`;
-  const online = c5.online === true && c5.metadata_fresh !== false ? b2`<span class="ok">在线 active</span>` : c5.online === false && c5.metadata_fresh !== false ? b2`<span class="muted">不在 active 快照</span>` : b2`<span class="warn">在线状态未知（元数据过期/失败时不把缓存当最新）</span>`;
-  const leases = (c5.leases || []).length ? c4(c5.leases, (l4) => l4.project || "", (l4) => b2`<div class=${l4.valid ? "ok" : "bad"}>${l4.project || ""}：${l4.valid ? "\u79DF\u7EA6\u6709\u6548" : "\u79DF\u7EA6\u5DF2\u5230\u671F"}${l4.recovery_blocked ? b2` <span class="bad">恢复阻塞</span>` : l4.failure_count ? ` \u5931\u8D25 ${l4.failure_count}` : A}</div>`) : b2`<span class="muted">无项目租约</span>`;
-  const gates = (c5.gates || []).length ? c5.gates.map(gateBadge) : b2`<span class="muted">无</span>`;
-  const tips = c4((c5.task_tips || []).slice(0, 3), (t5) => t5.id, (t5) => b2`<div class="task-line">${badge(t5.status)}<a class="title" href=${`#/task/${encodeURIComponent(t5.id)}`}>${t5.title || t5.id}</a><span class="spacer"></span><a href=${`#/task/${encodeURIComponent(t5.id)}`}>详情</a></div>`);
-  const tipMore = c5.task_tips_truncated ? b2`<div class="note">另有未终态任务未全部列出，进入工作台查看全量（全量计数不截断）。</div>` : A;
-  const attnCls = c5.attention_rank <= 1 ? "rank-high" : c5.attention_rank <= 3 ? "rank-mid" : "";
-  const unlockAction = unlockActionFor(c5);
-  const unlockBtn = unlockAction ? b2`<button class="danger" data-act="unlock" data-sid=${c5.session} data-project=${unlockAction.project} data-allow-provider=${unlockAction.allowProvider ? "1" : "0"} ?disabled=${ro()}>${unlockAction.label}</button>` : A;
-  return b2`<article class="card" data-key=${`coordinator:${c5.session}`}>
-    <div class="row"><h3><a href=${`#/coordinator/${encodeURIComponent(c5.session)}`}>${ident.name}</a></h3>${ident.badge}<span class="spacer"></span>${copyButton(c5.session)}</div>
-    <div class=${`attn ${attnCls}`}><span>${c5.attention || "\u5173\u6CE8"}</span></div>
-    <dl class="kv">
-      <dt>Session</dt><dd><code class="mono">${c5.session}</code>${staleTag}${c5.missing_snapshot ? b2`<div class="warn">不在本期发现范围</div>` : A}</dd>
-      <dt>身份级别</dt><dd>${ident.badge}<div class="muted">来源：${(c5.sources || []).join("\u3001") || "-"}</div></dd>
-      <dt>创建时间</dt><dd>${created}</dd>
-      <dt>在线状态</dt><dd>${online}</dd>
-      <dt>项目</dt><dd>${(c5.projects || []).length ? (c5.projects || []).join("\u3001") : b2`<span class="muted">-</span>`}</dd>
-      <dt>租约</dt><dd>${leases}</dd>
-      <dt>闸门</dt><dd>${gates}</dd>
-      <dt>计数</dt><dd><span class="badge">未终态 ${counts.unfinished ?? 0}</span> <span class="badge b-result_pending">待验收 ${counts.awaiting_verification ?? 0}</span> <span class="badge b-blocked">受阻 ${counts.blocked ?? 0}</span> <span class="badge b-accepted">已验收 ${counts.accepted ?? 0}</span> <span class="badge b-cancelled">已取消 ${counts.cancelled ?? 0}</span> <span class="badge">通知 ${counts.notifications_pending ?? 0}</span></dd>
-      <dt>最近进展</dt><dd>${c5.last_update ? ts(c5.last_update) : b2`<span class="muted">-</span>`}</dd>
+  const ident = identity(c5);
+  const counts = c5.counts || {};
+  const href = `#/coordinator/${encodeURIComponent(c5.session)}`;
+  const unlock2 = unlockActionFor(c5);
+  const tips = (c5.task_tips || []).slice(0, 3);
+  const flagged = c5.attention && c5.attention_rank < 6;
+  return b2`<article class="card coord-card" data-key=${`coordinator:${c5.session}`}>
+    <div class="session-heading">${ident.badge}${sessionRunStatus(c5, state.coordErr)}</div>
+    <h3><a href=${href}>${ident.name}</a></h3>
+    <div class="project-line">${(c5.projects || []).join("\u3001") || "\u672A\u5173\u8054\u9879\u76EE"}</div>
+    ${c5.missing_snapshot ? b2`<div class="warn">本次未找到该会话，显示上次记录</div>` : A}
+    <dl class="card-metrics">
+      <div><dt>未完成</dt><dd>${counts.unfinished ?? "\u2014"}</dd></div>
+      <div><dt>待验收</dt><dd>${counts.awaiting_verification ?? "\u2014"}</dd></div>
+      <div><dt>受阻</dt><dd class=${counts.blocked ? "bad" : ""}>${counts.blocked ?? "\u2014"}</dd></div>
     </dl>
-    <div>${tips}${tipMore}</div>
-    <div class="op-panel">${unlockBtn}<a class="button primary" href=${`#/coordinator/${encodeURIComponent(c5.session)}`} style="display:inline-block;padding:5px 12px;border:1px solid #2ea04388;border-radius:6px;color:#56d364">查看工作台</a></div>
+    ${flagged ? b2`<div class=${`attention-line ${c5.attention_rank <= 1 ? "bad" : "warn"}`}>${c5.attention}</div>` : A}
+    <details class="card-details"><summary>会话详情</summary>
+      <dl class="kv">
+        <dt>会话 ID</dt><dd><code class="mono">${c5.session}</code></dd>
+        <dt>关联依据</dt><dd>${(c5.sources || []).join("\u3001") || "\u672A\u77E5"}</dd>
+        <dt>创建时间</dt><dd>${c5.created_at_known ? ts(c5.created_at) : "\u521B\u5EFA\u65F6\u95F4\u672A\u77E5"}</dd>
+        ${c5.created_meta_stale || c5.metadata_fresh === false ? b2`<dt>会话信息</dt><dd class="warn">尚未更新 ${c5.created_meta_error?.split(":")[0] || ""}</dd>` : A}
+        <dt>最近进展</dt><dd>${ts(c5.last_update)}</dd>
+        <dt>项目租约</dt><dd>${(c5.leases || []).length ? c5.leases.map((l4) => b2`<div>${l4.project} · ${l4.valid ? "\u6709\u6548" : "\u5DF2\u5230\u671F"} ${l4.recovery_blocked ? "\u6062\u590D\u53D7\u963B" : l4.failure_count ? `\u5931\u8D25 ${l4.failure_count} \u6B21` : ""}</div>`) : "\u6682\u65E0"}</dd>
+        <dt>调度限制</dt><dd>${(c5.gates || []).length ? c5.gates.map(gateBadge) : "\u6682\u65E0"}</dd>
+        <dt>其他记录</dt><dd>已验收 ${counts.accepted ?? "\u2014"} · 已取消 ${counts.cancelled ?? "\u2014"} · 待处理通知 ${counts.notifications_pending ?? "\u2014"}</dd>
+      </dl>
+      ${tips.map((t5) => b2`<div class="task-line">${badge(t5.status)}<a href=${`#/task/${encodeURIComponent(t5.id)}`}>${t5.title || t5.id}</a></div>`)}
+      ${counts.unfinished > tips.length || c5.task_tips_truncated ? b2`<div class="note">其余任务可在工作台查看。</div>` : A}
+    </details>
+    <div class="card-footer"><a class="button workspace-link" href=${href}>查看工作台 <span aria-hidden="true">→</span></a>
+      ${unlock2 ? b2`<button class="danger" data-act="unlock" data-sid=${c5.session} data-project=${unlock2.project} data-allow-provider=${unlock2.allowProvider ? "1" : "0"} ?disabled=${ro()}>${unlock2.label}</button>` : A}
+      ${copyButton(c5.session)}</div>
   </article>`;
 }
+function summaryLink(href, label, count) {
+  return b2`<a class="summary-link" href=${href}><span>${label}</span>
+    <strong>${count ?? "\u2014"}</strong><span class="summary-arrow" aria-hidden="true">↗</span></a>`;
+}
 function renderOverview() {
-  const meta = state.coordMeta || {};
-  const departed = state.coordList.filter((sid) => (state.coordMap[sid] || {}).missing_snapshot).length;
-  const fullUnbound = meta.unbound_task_count != null ? meta.unbound_task_count : null;
-  const isCoord = (sid) => state.coordMap[sid] !== void 0;
-  const oper = state.resp.filter((r4) => !isCoord(r4.owner));
-  const unattributed = (state.snap?.alerts || []).filter((a3) => !a3.task_id && !a3.attempt_id);
-  const unboundPart = fullUnbound !== null ? fullUnbound > 0 ? b2`<span class="bad"><a href="#/tasks/unbound" class="warn">未绑定任务 ${fullUnbound}（全量，含超限）</a></span>` : b2`<span>未绑定任务 0（全量）</span>` : b2`<span class="warn">未绑定任务 ？（全量数据不可用）</span>`;
-  const operPart = oper.length ? b2`<span class="warn">operator/外部责任 ${oper.length}</span>` : b2`operator/外部责任 0`;
-  const alertPart = unattributed.length ? b2`<span class="warn">无归属告警 ${unattributed.length}</span>` : b2`无归属告警 0`;
-  return b2`<h2>调度总览</h2>
-    <div class="attn rank-mid">${unboundPart} · ${operPart} · ${alertPart}</div>
-    <div class="muted">
-      共 ${state.coordList.length} 个已知会话（本期快照不在发现范围的已停用/解绑对象 ${departed} 仍保留并标注）：任务显式绑定/项目租约确认的调度者 ∪ 通知目标关联会话（非全体 OpenCode session）。
-      <br>通知目标仅构成关联证据：单独历史通知不证明当前调度角色、在线或责任；worker/kind=test 等目标也可能出现，卡片以“仅通知关联 · 调度者角色未确认”标注，不会误称确认调度者。
-      <br>排序：可靠创建时间从旧到新；未知创建时间排后、以 Session ID 稳定兜底。${meta.created_at_known != null ? b2`创建时间已知 ${meta.created_at_known}，未知 ${meta.created_at_unknown}。` : A}
-      ${meta.metadata_error || !meta.metadata_fresh ? b2`<span class="warn">元数据过期/不可用：创建时间与在线可能显示未知，但不影响稳定排序。</span>` : A}
-      <br>${meta.task_counts_note || ""}</div>
-    <div class="grid-cards">${state.coordList.length ? c4(state.coordList, (sid) => sid, (sid) => coordCard(state.coordMap[sid])) : b2`<div class="empty">未发现调度者。请在任务显式绑定或协调者租约出现后自动呈现。</div>`}</div>`;
+  const meta = state.coordMeta;
+  const departed = state.coordList.filter((sid) => state.coordMap[sid].missing_snapshot).length;
+  const outside = meta && state.ready && !state.errors.responsibilities && !state.coordErr ? state.resp.filter((r4) => !state.coordMap[r4.owner]).length : null;
+  const alerts = state.snap?.alerts?.filter((a3) => !a3.task_id && !a3.attempt_id).length;
+  return b2`<div class="page-heading"><h2>调度总览</h2></div>
+    <div class="summary-band">
+      ${summaryLink("#/tasks/unbound", "\u5F85\u5206\u914D\u4EFB\u52A1", meta?.unbound_task_count)}
+      ${summaryLink("#/diagnostics/responsibilities", "\u5176\u4ED6\u8D1F\u8D23\u4EBA\u5F85\u529E", outside)}
+      ${summaryLink("#/diagnostics/alerts", "\u672A\u5173\u8054\u4EFB\u52A1\u7684\u544A\u8B66", alerts)}
+    </div>
+    <div class="section-heading"><h3>调度会话 <span class="count">${meta ? state.coordList.length : "\u2014"}</span></h3></div>
+    <div class="grid-cards">${state.coordList.length ? c4(state.coordList, (sid) => sid, (sid) => coordCard(state.coordMap[sid])) : b2`<div class="empty">${meta ? "\u6682\u65E0\u5173\u8054\u7684\u8C03\u5EA6\u4F1A\u8BDD\u3002" : "\u6682\u65F6\u65E0\u6CD5\u8BFB\u53D6\u8C03\u5EA6\u4F1A\u8BDD\u3002"}</div>`}</div>
+    <details class="scope"><summary>数据范围与排序</summary>
+      <p>待分配任务按全部任务统计。其他负责人待办统计当前读取的最多 200 条待办中，由列表以外的负责人处理的事项。告警统计本次读取的最多 50 条新告警。</p>
+      <p>会话按创建时间从早到晚排列。仅收到通知的会话会标注身份。创建时间未知的排在最后，同组按会话 ID 排列。刷新时保留原有顺序。</p>
+      ${departed ? b2`<p>其中 ${departed} 个会话仅有上次记录。</p>` : A}
+      ${meta?.metadata_fresh === false ? b2`<p class="warn">部分会话缺少最新信息。</p>` : A}
+    </details>`;
 }
 
 // src/views/coordinator.js
-function tasksTab(sid, data, pag) {
+function tasksTab(sid, pag) {
   const tasks = pag.tasks || [];
   const unfinished = tasks.filter((t5) => t5.status !== "accepted" && t5.status !== "cancelled");
   const accepted = tasks.filter((t5) => t5.status === "accepted");
   const cancelled = tasks.filter((t5) => t5.status === "cancelled");
-  const trow = (t5) => b2`<div class="task-line"><span>${badge(t5.status)}</span><span class="mono">${t5.owned_via === "explicit" ? "\u663E\u5F0F\u7ED1\u5B9A" : "\u9879\u76EE\u79DF\u7EA6"}</span><a class="title" href=${`#/task/${encodeURIComponent(t5.id)}`}>${t5.title || t5.id}</a><span class="spacer"></span>${t5.current_attempt ? b2`<a class="mono" href=${`#/attempt/${encodeURIComponent(t5.current_attempt)}`}>${t5.current_attempt}</a>` : b2`<span class="muted">无当前尝试</span>`}<span class="note">${t5.project || ""}</span></div>${t5.blocked_reason ? b2`<div class="note">受阻：${t5.blocked_reason}</div>` : A}`;
+  const trow = (t5) => b2`<div class="task-line coord-task">
+    <div class="row">${badge(t5.status)}<a class="title" href=${`#/task/${encodeURIComponent(t5.id)}`}>${t5.title || t5.id}</a></div>
+    <div class="task-context"><span>${t5.project || "\u9879\u76EE\u672A\u77E5"} · ${t5.owned_via === "explicit" ? "\u4EFB\u52A1\u5355\u72EC\u6307\u5B9A" : "\u7531\u9879\u76EE\u8C03\u5EA6\u8005\u8D1F\u8D23"}</span>
+      ${t5.current_attempt ? b2`<a href=${`#/attempt/${encodeURIComponent(t5.current_attempt)}`}>查看本次执行</a>` : A}</div>
+    ${t5.blocked_reason ? b2`<div class="warn">受阻原因 · ${t5.blocked_reason}</div>` : A}
+  </div>`;
   const histRow = (label) => (t5) => b2`<div class="task-line"><span>${badge(t5.status)}</span><a href=${`#/task/${encodeURIComponent(t5.id)}`}>${t5.title || t5.id}</a><span class="spacer"></span><span class="note">${label} ${ts(t5.updated_at)}</span></div>`;
   const acc = c4(accepted.slice(0, 20), (t5) => t5.id, histRow("\u5DF2\u9A8C\u6536"));
   const can = c4(cancelled.slice(0, 20), (t5) => t5.id, histRow("\u5DF2\u53D6\u6D88"));
-  return b2`<h3>任务（全量 ${pag.full} 项 · 已加载 ${tasks.length} 项，按任务 ID 升序${pag.truncated ? " \xB7 \u53EF\u7EE7\u7EED\u52A0\u8F7D" : ""}；未终态 ${unfinished.length}）</h3>
-    ${unfinished.length ? c4(unfinished, (t5) => t5.id, trow) : b2`<div class="empty">当前没有未终态任务。</div>`}
-    ${accepted.length ? b2`<h3>已验收（${accepted.length}）</h3>${acc}${accepted.length > 20 ? b2`<div class="note">… 已加载其中前 20 项，其余请使用任务检索</div>` : A}` : A}
-    ${cancelled.length ? b2`<h3>已取消（${cancelled.length}）</h3>${can}${cancelled.length > 20 ? b2`<div class="note">… 已加载其中前 20 项，其余请使用任务检索</div>` : A}` : A}
-    ${pag.truncated ? b2`<div class="op-panel"><button class="primary" data-act="coordmore" data-sid=${sid} ?disabled=${pag.lock}>继续加载（按 ID 升序）</button></div>` : A}
-    <div class="note">${data.tasks_scope || ""}；刷新保留已加载列表，不重置位置。</div>`;
+  return b2`<h3>未完成任务 <span class="count">${unfinished.length}</span></h3><div class="note">已加载 ${tasks.length} 项，共 ${pag.full} 项</div>
+    ${unfinished.length ? c4(unfinished, (t5) => t5.id, trow) : b2`<div class="empty">当前列表中没有未完成任务。</div>`}
+    ${accepted.length ? b2`<h3>已验收 · ${accepted.length}</h3>${acc}${accepted.length > 20 ? b2`<div class="note">… 已加载其中前 20 项，其余请使用任务检索</div>` : A}` : A}
+    ${cancelled.length ? b2`<h3>已取消 · ${cancelled.length}</h3>${can}${cancelled.length > 20 ? b2`<div class="note">… 已加载其中前 20 项，其余请使用任务检索</div>` : A}` : A}
+    ${pag.truncated ? b2`<div class="op-panel"><button class="primary" data-act="coordmore" data-sid=${sid} ?disabled=${pag.lock}>继续加载</button></div>` : A}
+`;
 }
 function todosTab(notes, resp) {
-  const rrow = (r4) => b2`<div class="task-line"><span>${badge(r4.state)}</span><span class="mono">${r4.id || "-"}</span><div><div>${r4.owner || "-"} → ${r4.target_session || "-"}</div><div class="note">等待条件：${r4.wait_condition || "-"} · next ${r4.next_action || "-"} · 期限 ${ts(r4.deadline)}</div></div></div>`;
+  const rrow = (r4) => b2`<div class="task-line"><span>${badge(r4.state)}</span><span class="mono">${r4.id || "-"}</span><div><div>${r4.owner || "-"} → ${r4.target_session || "-"}</div><div class="note">等待条件：${r4.wait_condition || "-"} · 下一步 ${r4.next_action || "-"} · 期限 ${ts(r4.deadline)}</div></div></div>`;
   const actionable = notes.filter((n4) => ["pending", "inflight", "sent"].includes(n4.state));
-  return b2`<h3>待办（后续责任，仅可行动项；ACK 不等于责任关闭）</h3>
-    ${resp.length ? c4(resp, (r4) => r4.id || "", rrow) : b2`<div class="empty">无可行动责任。</div>`}
-    ${actionable.length ? b2`<h3>通知回执（待 ACK/待投递）</h3>${c4(actionable, (n4) => n4.id, (n4) => b2`<div class="task-line"><span>${badge(n4.state)}</span><span class="mono">${n4.id}</span><span>${n4.kind} · ${n4.summary || ""}</span><span class="spacer"></span>${ro() ? A : b2`<button class="primary" data-act="acknote" data-id=${n4.id}>ACK</button>`}</div>`)}` : A}`;
+  return b2`<h3>待办事项</h3>
+    ${resp.length ? c4(resp, (r4) => r4.id || "", rrow) : b2`<div class="empty">暂无待办事项。</div>`}
+    ${actionable.length ? b2`<h3>待处理通知</h3>${c4(actionable, (n4) => n4.id, (n4) => b2`<div class="task-line"><span>${badge(n4.state)}</span><span class="mono">${n4.id}</span><span>${n4.kind} · ${n4.summary || ""}</span><span class="spacer"></span>${ro() ? A : b2`<button class="primary" data-act="acknote" data-id=${n4.id}>确认收到</button>`}</div>`)}` : A}`;
 }
 function activityTab(sid, notes) {
-  const nrow = (n4) => b2`<div class="task-line"><span>${badge(n4.state)}</span><span class="mono">${n4.id}</span><span>${n4.kind}</span><div class="note">摘要：${n4.summary || "-"}（发送 ${ts(n4.sent_at)}）</div><span class="spacer"></span></div>`;
+  const nrow = (n4) => b2`<div class="task-line"><span>${badge(n4.state)}</span><span class="mono">${n4.id}</span><span>${n4.kind}</span><div class="note">摘要：${n4.summary || "-"} · 发送于 ${ts(n4.sent_at)}</div><span class="spacer"></span></div>`;
   const inputs = (state.inputs || []).filter((i8) => (i8.session_id || i8.session) === sid);
-  return b2`<h3>活动（通知与输入回执；原始正文不展示，回执不冒充验收）</h3>
+  return b2`<h3>通知记录</h3>
     ${notes.length ? c4(notes, (n4) => n4.id, nrow) : b2`<div class="empty">无通知记录。</div>`}
-    <h3>受管输入（本调度者为目标）</h3>
-    ${inputs.length ? c4(inputs, (i8) => i8.input_id || i8.message_id || "", (i8) => b2`<div class="task-line"><span class="mono">${i8.input_id || "-"}</span><span>${i8.intent || "-"} · 受理 ${i8.admission || "-"} → 投递 ${i8.delivery || "-"} → 业务ACK ${i8.business_ack || "-"}</span><span class="note">next ${i8.next_action || "-"}</span></div>`) : b2`<div class="empty">无输入回执。</div>`}`;
+    <h3>发给此会话的指令</h3>
+    ${inputs.length ? c4(inputs, (i8) => i8.input_id || i8.message_id || "", (i8) => b2`<div class="task-line"><span class="mono">${i8.input_id || "-"}</span><span>${i8.intent || "-"} · 受理 ${i8.admission || "-"} → 投递 ${i8.delivery || "-"} → 业务ACK ${i8.business_ack || "-"}</span><span class="note">下一步 ${i8.next_action || "-"}</span></div>`) : b2`<div class="empty">无输入回执。</div>`}`;
 }
 function healthTab(sid, data) {
   const h5 = state.healthBySid[sid];
@@ -970,7 +1110,7 @@ function healthTab(sid, data) {
       <td>${badge(t5.state)}${t5.process_healthy != null ? b2`<div class="muted">proc ${t5.process_healthy ? "ok" : "down"}</div>` : A}</td>
       <td class="mono">${t5.owner || "-"}</td>
       <td>${t5.next_action || "-"}</td>
-      <td>${resp.deadline != null ? ts(resp.deadline) : "-"}<div class="muted">next ${resp.next_check_at != null ? ts(resp.next_check_at) : "-"}</div></td>
+      <td>${resp.deadline != null ? ts(resp.deadline) : "-"}<div class="muted">下一步 ${resp.next_check_at != null ? ts(resp.next_check_at) : "-"}</div></td>
       <td>${resp.budget_used != null ? `${resp.budget_used}/${resp.max_budget ?? "-"}` : "-"}</td>
       <td>${t5.evidence_coverage === true ? b2`<span class="ok">完整</span>` : t5.evidence_coverage === false ? b2`<span class="warn">不足</span>` : b2`<span class="muted">-</span>`}</td>
       <td>${ts(t5.latest_business_event_at)}</td>
@@ -978,7 +1118,7 @@ function healthTab(sid, data) {
     </tr>`;
   };
   const proc = body?.process || {};
-  const procLine = proc.healthy == null ? b2`<span class="muted">进程健康未知</span>` : proc.healthy ? b2`<span class="ok">进程 healthy</span> ${proc.connected != null ? `connected=${proc.connected}` : ""}${proc.heartbeat_age_s != null ? b2` · 心跳 ${proc.heartbeat_age_s}s 前` : ""}${proc.last_cycle_at != null ? b2` · 上轮 ${ts(proc.last_cycle_at)}` : ""}` : b2`<span class="bad">进程 unhealthy</span>`;
+  const procLine = proc.healthy == null ? b2`<span class="muted">进程状态未知</span>` : proc.healthy ? b2`<span class="ok">进程正常</span> ${proc.connected != null ? `connected=${proc.connected}` : ""}${proc.heartbeat_age_s != null ? b2` · 心跳 ${proc.heartbeat_age_s}s 前` : ""}${proc.last_cycle_at != null ? b2` · 上轮 ${ts(proc.last_cycle_at)}` : ""}` : b2`<span class="bad">进程异常</span>`;
   const runtime = body?.runtime || {};
   const runtimeBits = [];
   if (runtime.release_id) runtimeBits.push(b2`release ${runtime.release_id}`);
@@ -988,25 +1128,27 @@ function healthTab(sid, data) {
   if (runtime.email_default_enabled === false) runtimeBits.push(b2`邮件默认关闭`);
   if (runtime.native_trusted_chat_enabled === false) runtimeBits.push(b2`native 对话未启用`);
   const scopeNote = body?.coverage ? body.coverage.complete ? "\u8986\u76D6\u5B8C\u6574" : `\u90E8\u5206\u8986\u76D6${body.coverage.next_after_id ? "\uFF0C\u53EF\u7EED\u9875" : ""}` : "\u8986\u76D6\u672A\u77E5";
-  const ctrl = !single ? b2`<div class="note">${projects.length ? "\u591A\u9879\u76EE\u5173\u8054\uFF1A\u672C\u9875\u4E0D\u731C\u6D4B\u76EE\u6807\u9879\u76EE\uFF0C\u63A7\u5236\u64CD\u4F5C\u4E0D\u5728\u5DE5\u4F5C\u53F0\u63D0\u4F9B\u3002" : "\u6CA1\u6709\u53EF\u5F52\u5C5E\u9879\u76EE\uFF1A\u4E0D\u663E\u793A\u63A7\u5236\u64CD\u4F5C\u3002"}</div>` : b2`<div class="row" style="margin:6px 0">
+  const ctrl = !single ? b2`<div class="note">${projects.length ? "\u6B64\u4F1A\u8BDD\u8D1F\u8D23\u591A\u4E2A\u9879\u76EE\uFF0C\u8BF7\u6309\u9879\u76EE\u9009\u62E9\u6682\u505C\u6216\u6062\u590D\u3002" : "\u6B64\u4F1A\u8BDD\u5C1A\u672A\u5173\u8054\u9879\u76EE\u3002"}</div>` : b2`<div class="row" style="margin:6px 0">
         <span class="muted">项目 <code class="mono">${single}</code>：${intent ?? "\u672A\u77E5"}</span>${hasControlVersion ? b2`<span class="muted"> · rev ${rev} · epoch ${epoch}</span>` : A}<span class="spacer"></span>
         ${showResume ? b2`<button class="primary" data-act="projresume" data-sid=${sid} data-project=${single} ?disabled=${r4}>继续</button>` : A}
         ${showPause ? b2`<button class="danger" data-act="projpause" data-sid=${sid} data-project=${single} ?disabled=${r4}>暂停</button>` : A}
-        ${!hasControlVersion && single ? b2`<span class="muted">暂无控制版本记录（不显示操作以免误导）</span>` : A}
+        ${!hasControlVersion && single ? b2`<span class="muted">缺少项目版本，暂时无法操作</span>` : A}
       </div>`;
   return b2`<div id="bizHealth">
-    <h3>业务健康（${scopeNote}；进程健康 ≠ 业务进展/完成）</h3>
-    <div class="note">${body?.semantics || ""}${h5?.error ? b2` <span class="bad">（刷新失败，保留旧数据：${h5.error.message}）</span>` : A}</div>
+    <h3>业务健康</h3>
+    <div class="note">任务完成以验收结论为准。 ${scopeNote}${h5?.error ? b2` <span class="bad">刷新失败，显示上次记录 · ${h5.error.message}</span>` : A}</div>
     <div class="note">${procLine}</div>
     ${ctrl}
-    <div class="tablewrap"><table><thead><tr><th>Task</th><th>状态</th><th>Owner</th><th>下一动作</th><th>期限 / 下次检查</th><th>预算</th><th>证据</th><th>最近业务事件</th><th>控制（意图/hold/回合/provider）</th></tr></thead><tbody>
-      ${tasks.length ? c4(tasks, (t5) => t5.task_id || JSON.stringify(t5), trow) : b2`<tr><td colspan="9" class="muted">${h5 ? "\u8BE5\u4F1A\u8BDD\u5F53\u524D\u65E0\u672A\u5B8C\u6210\u4E1A\u52A1\u5065\u5EB7\u8BB0\u5F55\u3002" : "\u5065\u5EB7\u6570\u636E\u672A\u52A0\u8F7D\uFF08\u7B49\u5F85\u5237\u65B0\uFF09\u3002"}</td></tr>`}
+    <div class="tablewrap"><table><thead><tr><th>任务</th><th>状态</th><th>负责人</th><th>下一动作</th><th>期限 / 下次检查</th><th>预算</th><th>证据</th><th>最近业务事件</th><th>调度限制</th></tr></thead><tbody>
+      ${tasks.length ? c4(tasks, (t5) => t5.task_id || JSON.stringify(t5), trow) : b2`<tr><td colspan="9" class="muted">${h5 ? "\u8BE5\u4F1A\u8BDD\u5F53\u524D\u65E0\u672A\u5B8C\u6210\u4E1A\u52A1\u5065\u5EB7\u8BB0\u5F55\u3002" : "\u6B63\u5728\u7B49\u5F85\u5065\u5EB7\u6570\u636E\u3002"}</td></tr>`}
     </tbody></table></div>
     ${runtimeBits.length ? b2`<div class="note" id="runtimeIdentity">运行身份：${runtimeBits}</div>` : A}
   </div>`;
 }
 function renderCoordinator(sid, data = {}) {
   const c5 = data.coordinator || {};
+  const key = `coordinator:${sid}`;
+  const stale = state.details.get(key)?.error || state.pendingRoute.has(key);
   const ident = identity(c5);
   const pag = state.coordPages[sid] || {
     tasks: data.tasks || [],
@@ -1017,45 +1159,42 @@ function renderCoordinator(sid, data = {}) {
   };
   const tab = state.tab.coordinator || "tasks";
   const created = c5.created_at_known ? ts(c5.created_at) : b2`<span class="warn">创建时间未知</span>`;
-  const online = c5.online === true && c5.metadata_fresh !== false ? b2`<span class="ok">在线 active</span>` : c5.online === false && c5.metadata_fresh !== false ? b2`<span class="muted">不在 active 快照</span>` : b2`<span class="warn">在线状态未知</span>`;
   const leases = (c5.leases || []).length ? c4(c5.leases, (l4) => l4.project || "", (l4) => b2`<div class=${l4.valid ? "ok" : "bad"}>${l4.project || ""}：${l4.valid ? "\u79DF\u7EA6\u6709\u6548" : "\u5DF2\u5230\u671F"}${l4.recovery_blocked ? b2` <span class="bad">恢复阻塞</span>` : l4.failure_count ? b2` <span class="warn">失败 ${l4.failure_count}</span>` : A}<span class="muted"> 到期 ${ts(l4.expires_at)}</span></div>`) : b2`<span class="muted">无项目租约</span>`;
-  const gates = (c5.gates || []).length ? c4(c5.gates, (g2) => `${g2.state}:${g2.source || ""}`, (g2) => b2`<div class=${g2.state === "manual-blocked" ? "bad" : "warn"}>闸门 ${g2.state}${g2.source ? " / " + g2.source : ""}${g2.reason ? b2`<div class="muted">${g2.reason}</div>` : A}</div>`) : b2`<span class="muted">无闸门</span>`;
+  const gates = (c5.gates || []).length ? c4(c5.gates, (g2) => `${g2.state}:${g2.source || ""}`, (g2) => b2`<div class=${g2.state === "manual-blocked" ? "bad" : "warn"}>${gateBadge(g2)}${g2.reason ? b2`<div class="muted">${g2.reason}</div>` : A}</div>`) : b2`<span class="muted">暂无调度限制</span>`;
   const unlockAction = unlockActionFor(c5);
   const unlock2 = unlockAction ? b2`<button class="danger" data-act="unlock" data-sid=${sid} data-project=${unlockAction.project} data-allow-provider=${unlockAction.allowProvider ? "1" : "0"} ?disabled=${ro()}>${unlockAction.label}</button>` : A;
   const counts = c5.counts || {};
-  const countsRow = Object.keys(counts).length ? b2`未终态 ${counts.unfinished ?? 0} · 待验收 ${counts.awaiting_verification ?? 0} · 受阻 ${counts.blocked ?? 0} · 已验收 ${counts.accepted ?? 0} · 已取消 ${counts.cancelled ?? 0} · 通知 ${counts.notifications_pending ?? 0}` : "-";
+  const countsRow = Object.keys(counts).length ? b2`未完成 ${counts.unfinished ?? 0} · 待验收 ${counts.awaiting_verification ?? 0} · 受阻 ${counts.blocked ?? 0} · 已验收 ${counts.accepted ?? 0} · 已取消 ${counts.cancelled ?? 0} · 通知 ${counts.notifications_pending ?? 0}` : "-";
   const sc = data.session_control || {};
   const hold = sc.hold;
   const barrier = sc.barrier;
   const singleProject = (c5.projects || []).length === 1 ? c5.projects[0] : null;
   const candidate = state.turnCandidates[sid] && state.turnCandidates[sid].revision === sc.revision ? state.turnCandidates[sid] : null;
-  const holdRow = sc.ok === false ? b2`<span class="bad">回合控制不可读（${sc.error || "unknown"}）；不提供操作</span>` : hold ? b2`<div class="bad">hold：${hold.reason || "unknown"}<span class="muted"> ${ts(hold.held_at)}</span></div>${barrier ? b2`<div class="warn">用户回合屏障：<code class="mono">${barrier.message_id || "-"}</code>（${ts(barrier.origin_at)}）</div>` : b2`<div class="muted">无用户回合屏障</div>`}` : b2`<span class="muted">无回合 hold</span>`;
-  const candidateRow = candidate ? candidate.eligible ? b2`<div class="ok">可登记的用户输入：<code class="mono">${candidate.message_id}</code>（${ts(candidate.created)}，${candidate.outcome}）</div>` : b2`<div class="warn">不可登记：${candidate.reason || "unknown"}${candidate.message_id ? b2`（最新用户输入 <code class="mono">${candidate.message_id}</code>）` : A}</div>` : A;
+  const holdRow = sc.ok === false ? b2`<span class="bad">回合控制不可读 · ${sc.error || "\u672A\u77E5\u9519\u8BEF"}</span>` : hold ? b2`<div class="bad">自动唤醒已暂停 · ${hold.reason || "unknown"}<span class="muted"> ${ts(hold.held_at)}</span></div>${barrier ? b2`<div class="warn">正在等待用户回合结束 · <code class="mono">${barrier.message_id || "-"}</code> · ${ts(barrier.origin_at)}</div>` : b2`<div class="muted">暂无待结束的用户回合</div>`}` : b2`<span class="muted">自动唤醒未暂停</span>`;
+  const candidateRow = candidate ? candidate.eligible ? b2`<div class="ok">可登记的用户输入：<code class="mono">${candidate.message_id}</code> · ${ts(candidate.created)} · ${candidate.outcome}</div>` : b2`<div class="warn">不可登记：${candidate.reason || "unknown"}${candidate.message_id ? b2` · 最新用户输入 <code class="mono">${candidate.message_id}</code>` : A}</div>` : A;
   const holdActions = hold && !ro() && singleProject && !barrier && sc.ok !== false ? b2`<div class="op-panel">
         <button data-act="checkturn" data-sid=${sid} data-project=${singleProject}>检查可登记的用户回合</button>
-        ${candidate?.eligible ? b2`<button class="primary" data-act="registerturn" data-sid=${sid} data-project=${singleProject}>登记并恢复调谐</button>` : A}
-        <button class="danger" data-act="releasehold" data-sid=${sid} data-project=${singleProject}>运维强制解除 hold</button>
-        <span class="note">登记只接受已完成的真实用户输入；强制解除是显式运维例外，只恢复自动调谐资格，不解除项目暂停/provider/任务门禁。</span>
+        ${candidate?.eligible ? b2`<button class="primary" data-act="registerturn" data-sid=${sid} data-project=${singleProject}>登记已完成的回合</button>` : A}
+        <button class="danger" data-act="releasehold" data-sid=${sid} data-project=${singleProject}>强制恢复自动唤醒</button>
+        <span class="note">登记需要已完成的用户输入。强制恢复后，系统仍会检查项目暂停和其他限制。</span>
       </div>
-      ${candidateRow}
-      <div class="note">hold 只阻止自动唤醒；不取消在途任务/worker，也不代替验收或 ACK。</div>` : A;
-  const body = tab === "tasks" ? tasksTab(sid, data, pag) : tab === "todos" ? todosTab(data.notifications || [], data.responsibilities || []) : tab === "health" ? healthTab(sid, data) : activityTab(sid, data.notifications || []);
+      ${candidateRow}` : A;
+  const body = tab === "tasks" ? tasksTab(sid, pag) : tab === "todos" ? todosTab(data.notifications || [], data.responsibilities || []) : tab === "health" ? healthTab(sid, data) : activityTab(sid, data.notifications || []);
   return b2`<div class="breadcrumb"><a href="#/">总览</a> <span class="sep">/</span> <span>${ident.name}</span></div>
-    <div class="row"><h2>${ident.name}</h2>${ident.badge}<span class="spacer"></span>${copyButton(sid)}${unlock2}</div>
+    <div class="row workspace-heading"><h2>${ident.name}</h2>${sessionRunStatus(c5, stale)}${ident.badge}<span class="spacer"></span>${copyButton(sid)}${unlock2}</div>
     ${(c5.projects || []).length === 1 && !ro() ? b2`<div class="op-panel">
-      <button data-act="usersend" data-sid=${sid} data-project=${c5.projects[0]}>显式补充指令</button>
-      <button data-act="userobserve" data-sid=${sid} data-project=${c5.projects[0]}>观察原指令完整结束</button>
-      <span class="note">不接管项目、不解除显式暂停；普通原生聊天透明接续不在此入口范围。</span></div>` : A}
-    <dl class="kv">
-      <dt>Session</dt><dd><code class="mono">${sid}</code></dd>
+      <button data-act="usersend" data-sid=${sid} data-project=${c5.projects[0]}>补充指令</button>
+      <button data-act="userobserve" data-sid=${sid} data-project=${c5.projects[0]}>检查上一条指令</button>
+</div>` : A}
+    <details class="scope"><summary>会话与项目详情</summary><dl class="kv">
+      <dt>会话 ID</dt><dd><code class="mono">${sid}</code></dd>
       <dt>创建时间</dt><dd>${created}</dd>
-      <dt>在线状态</dt><dd>${online}</dd>
       <dt>项目</dt><dd>${(c5.projects || []).length ? (c5.projects || []).join("\u3001") : b2`<span class="muted">-</span>`}</dd>
       <dt>租约</dt><dd>${leases}</dd>
-      <dt>闸门</dt><dd>${gates}</dd>
-      <dt>回合控制</dt><dd>${holdRow}</dd>
-      <dt>计数</dt><dd>${countsRow}（全量台账，非 200 项快照）</dd>
-    </dl>
+      <dt>调度限制</dt><dd>${gates}</dd>
+      <dt>全部任务与通知</dt><dd>${countsRow}</dd>
+    </dl></details>
+    ${hold || sc.ok === false ? b2`<div class="attn rank-mid"><strong>回合控制</strong>${holdRow}</div>` : A}
     ${holdActions}
     <div class="tabs" role="tablist" aria-label="工作台分区">
       <button role="tab" aria-selected=${tab === "tasks" ? "true" : "false"} data-tab="tasks">任务</button>
@@ -1076,27 +1215,27 @@ function renderVerifyForm(key) {
   const draft = state.verifyDrafts.get(key) || {};
   const v3 = (name) => draft[name] ?? "";
   return i7(`${attemptId}:${pass ? 1 : 0}`, b2`<form data-form="verify" data-key=${key} data-id=${attemptId} data-pass=${pass ? 1 : 0} class="card">
-    <legend>验收 ${pass ? "pass" : "fail"}：<code class="mono">${attemptId}</code></legend>
-    <label>证据（分号分隔，可留空）：<input type="text" name="evidence" .value=${v3("evidence")} ?disabled=${locked}></label>
-    <label>备注（可选）：<input type="text" name="notes" .value=${v3("notes")} ?disabled=${locked}></label>
-    <label>${pass ? "\u5907\u6CE8\u539F\u56E0\uFF08\u53EF\u9009\uFF1B\u6807\u51C6\u9A8C\u6536\uFF0C\u4E0D\u542F\u7528 force\uFF09\uFF1A" : "\u5931\u8D25\u539F\u56E0\uFF08\u5FC5\u586B\uFF09\uFF1A"}<input type="text" name="reason" .value=${v3("reason")} ?required=${!pass} ?disabled=${locked}></label>
+    <legend>${pass ? "\u901A\u8FC7\u9A8C\u6536" : "\u9A8C\u6536\u4E0D\u901A\u8FC7"} · <code class="mono">${attemptId}</code></legend>
+    <label>证据路径，多个用英文分号隔开<input type="text" name="evidence" .value=${v3("evidence")} ?disabled=${locked}></label>
+    <label>备注 · 可选<input type="text" name="notes" .value=${v3("notes")} ?disabled=${locked}></label>
+    <label>${pass ? "\u901A\u8FC7\u539F\u56E0 \xB7 \u53EF\u9009" : "\u672A\u901A\u8FC7\u539F\u56E0 \xB7 \u5FC5\u586B"}<input type="text" name="reason" .value=${v3("reason")} ?required=${!pass} ?disabled=${locked}></label>
     <div class="note">${verifySubmissionNote}</div>
-    <label><input type="checkbox" name="run_checks" ?disabled=${locked}> 先运行 --check 验收命令</label>
+    <label><input type="checkbox" name="run_checks" ?disabled=${locked}> 提交前运行验收检查</label>
     <label>确认：输入尝试 ID <input type="text" name="confirm" placeholder=${attemptId} .value=${v3("confirm")} required ?disabled=${locked}></label>
-    <div class="op-panel"><button class="primary" type="submit" ?disabled=${locked}>提交验收 ${pass ? "pass" : "fail"}</button><button type="button" data-act="closeverify" data-key=${key}>取消</button></div>
+    <div class="op-panel"><button class="primary" type="submit" ?disabled=${locked}>${pass ? "\u786E\u8BA4\u901A\u8FC7\u9A8C\u6536" : "\u786E\u8BA4\u9A8C\u6536\u4E0D\u901A\u8FC7"}</button><button type="button" data-act="closeverify" data-key=${key}>取消</button></div>
   </form>`);
 }
 function renderReworkForm(taskId) {
   const locked = ro();
   return b2`<form data-form="rework" data-id=${taskId} class="card">
     <legend>返工/继续：<code class="mono">${taskId}</code></legend>
-    <label>反馈（必填）<textarea name="feedback" required ?disabled=${locked}></textarea></label>
+    <label>返工要求 · 必填<textarea name="feedback" required ?disabled=${locked}></textarea></label>
     <label>工作模式<select name="work_mode" ?disabled=${locked}>
-      <option value="latency-first">latency-first / fast（时效优先，默认）</option>
-      <option value="budget-first">budget-first / budget（预算优先）</option>
-      <option value="elastic">elastic（弹性加速）</option>
+      <option value="latency-first">时效优先</option>
+      <option value="budget-first">预算优先</option>
+      <option value="elastic">弹性加速</option>
     </select></label>
-    <div class="note">工作模式只写入提示词，不改变模型/资源/费用授权；高风险任务仍按验收标准执行。</div>
+    <div class="note">工作模式用于指导本次返工。模型和费用按现有授权执行。</div>
     <label>确认：输入任务 ID <input type="text" name="confirm" placeholder=${taskId} required ?disabled=${locked}></label>
     <div class="op-panel"><button class="primary" type="submit" ?disabled=${locked}>提交返工</button></div>
   </form>`;
@@ -1136,33 +1275,33 @@ function policyForm(view, scope, target) {
   const pending = pendingPolicy(key);
   const value = (name, fallback) => draft[name] ?? fallback;
   if (ro() || view.ok !== true || !Number.isSafeInteger(view.revision)) return A;
-  return b2`<details><summary>${scope === "task" ? "\u663E\u5F0F\u5207\u6362\u4EFB\u52A1\u7B56\u7565" : "\u8BBE\u7F6E\u9879\u76EE\u9ED8\u8BA4\uFF08\u4EC5\u5F71\u54CD\u540E\u7EED\u65B0\u4EFB\u52A1\uFF09"}</summary>
+  return b2`<details><summary>${scope === "task" ? "\u8C03\u6574\u4EFB\u52A1\u7B56\u7565" : "\u8BBE\u7F6E\u65B0\u4EFB\u52A1\u7684\u9879\u76EE\u9ED8\u8BA4\u7B56\u7565"}</summary>
     <form data-form="delivery-policy" data-key=${key} data-scope=${scope} data-target=${target} data-revision=${view.revision}>
       <label>资源偏好 <select name="preset" .value=${value("preset", p4.preset)}>${modes.map(([id, label]) => b2`<option value=${id} ?selected=${value("preset", p4.preset) === id}>${label}</option>`)}</select></label>
-      <label>工作阶段 <select name="stage" .value=${value("stage", p4.stage)}><option value="standard" ?selected=${value("stage", p4.stage) === "standard"}>正式交付</option><option value="prototype" ?selected=${value("stage", p4.stage) === "prototype"}>快速原型（不降低既有验收）</option></select></label>
+      <label>工作阶段 <select name="stage" .value=${value("stage", p4.stage)}><option value="standard" ?selected=${value("stage", p4.stage) === "standard"}>正式交付</option><option value="prototype" ?selected=${value("stage", p4.stage) === "prototype"}>快速原型</option></select></label>
       ${[["max_parallel", "\u5206\u5DE5\u5E76\u53D1", 1, 32], ["max_candidates", "\u5B8C\u6574\u5019\u9009", 1, 8], ["max_challenge_rounds", "\u53EF\u9009\u6311\u6218\u8F6E\u6B21", 0, 8]].map(([name, label, min, max]) => b2`
         <label>${label} <input type="number" name=${name} min=${min} max=${max} step="1" .value=${String(value(name, p4.limits[name]))} required></label>`)}
       ${scope === "task" ? b2`<label><input type="checkbox" name="inherit" ?checked=${draft.inherit === true}>改为继承当前项目默认快照</label>` : A}
       <label>切换原因 <input name="reason" .value=${value("reason", "")} required></label>
       <label>逐字回填 ${target} <input name="confirm" .value=${value("confirm", "")} autocomplete="off" required></label>
-      <div class="note">CAS 版本 ${view.revision}；不抢占在途、不重播未知输入、不清除暂停或冷却，也不自动补授费用权限。</div>
-      ${pending ? b2`<div class="warn">请求结果待对账：<code>${pending.body.operation_id}</code>。不自动重投，也不创建新操作绕过。</div><button type="button" data-act="policyrecheck" data-scope=${scope} data-target=${target}>只读核对原请求</button>` : b2`<button type="submit" class="primary" ?disabled=${state.busyActions.has(`policy:${key}`)}>保存策略（不是模型全部瞬时切换）</button>`}
+      <div class="note">版本 ${view.revision}。新策略用于后续工作，费用需单独授权。</div>
+      ${pending ? b2`<div class="warn">请求结果待对账：<code>${pending.body.operation_id}</code>。不自动重投，也不创建新操作绕过。</div><button type="button" data-act="policyrecheck" data-scope=${scope} data-target=${target}>只读核对原请求</button>` : b2`<button type="submit" class="primary" ?disabled=${state.busyActions.has(`policy:${key}`)}>保存策略</button>`}
     </form></details>`;
 }
 function renderDeliveryPolicy(task, view, projectView) {
-  if (!view) return b2`<h3>交付策略</h3><div class="muted">此后端未提供策略覆盖信息；不显示为已启用。</div>`;
-  if (view.ok !== true) return b2`<h3>交付策略</h3><div class="bad">策略不可读：${view.code || "unknown"}；不放行切换或宣称已启用。</div>`;
+  if (!view) return b2`<h3>交付策略</h3><div class="muted">当前服务未提供策略信息。</div>`;
+  if (view.ok !== true) return b2`<h3>交付策略</h3><div class="bad">策略不可读：${view.code || "unknown"}，暂时无法调整。</div>`;
   const p4 = view.version?.policy;
   const inflight = view.inflight || { items: [], total: 0 };
   return b2`<section class="policy-panel"><h3>交付策略</h3>
-    <div>${view.managed ? `${modes.find(([id]) => id === p4?.preset)?.[1] || p4?.preset} / ${p4?.stage === "prototype" ? "\u5FEB\u901F\u539F\u578B" : "\u6B63\u5F0F\u4EA4\u4ED8"} / v${view.revision}` : "\u672A\u7EB3\u7BA1\uFF08\u5386\u53F2\u517C\u5BB9\u884C\u4E3A\uFF0C\u4E0D\u8865\u9020\u65E2\u5F80\u8D44\u6E90\u6388\u6743\uFF09"}</div>
-    <div class=${view.execution_enforced ? "note" : "warn"}>${view.execution_enforced ? "\u540E\u7EED\u53D7\u7BA1\u8F93\u5165\u5DF2\u63A5\u8BB8\u53EF\u5B88\u536B\uFF1B\u4E0D\u662F\u5168\u94FE\u8D39\u7528\u4FDD\u8BC1" : "\u4EC5\u7B56\u7565\u8349\u6848\uFF1B\u8FD0\u884C\u65F6\u5B88\u536B\u5C1A\u672A\u542F\u7528"}</div>
+    <div>${view.managed ? `${modes.find(([id]) => id === p4?.preset)?.[1] || p4?.preset} / ${p4?.stage === "prototype" ? "\u5FEB\u901F\u539F\u578B" : "\u6B63\u5F0F\u4EA4\u4ED8"} / v${view.revision}` : "\u672A\u914D\u7F6E\u4EFB\u52A1\u7B56\u7565"}</div>
+    <div class=${view.execution_enforced ? "note" : "warn"}>${view.execution_enforced ? "\u540E\u7EED\u53D7\u7BA1\u8F93\u5165\u5DF2\u63A5\u8BB8\u53EF\u5B88\u536B\uFF1B\u4E0D\u662F\u5168\u94FE\u8D39\u7528\u4FDD\u8BC1" : "\u7B56\u7565\u8349\u6848 \xB7 \u8FD0\u884C\u65F6\u5B88\u536B\u5C1A\u672A\u542F\u7528"}</div>
     <div class="note">来源：${view.version?.source ? `\u9879\u76EE\u9ED8\u8BA4 v${view.version.source.revision}` : "\u4EFB\u52A1\u663E\u5F0F\u7B56\u7565\u6216\u672A\u914D\u7F6E"}。独立资源授权 v${view.authorization?.revision ?? 0}；授权明细/撤销走独立 operator 入口。</div>
-    <div class="note">共用协调者费用独立；模式不改绑父模型。原型允许明确 mock/占位，不改变 collect/verify 或原承诺。</div>
-    ${view.routing_context ? b2`<details><summary>路线连续性与上下文观测（非授权）</summary>
+    <div class="note">共用协调者费用独立。任务仍按既定标准验收。</div>
+    ${view.routing_context ? b2`<details><summary>模型路线与上下文记录</summary>
       <div>${view.routing_context.continuity_reason}</div><div>缺失/过期是 unknown，不是零开销或缓存命中，不保证换路更快。</div>
       <ul>${Object.entries(view.routing_context.observations || {}).map(([name, item]) => b2`<li>${name}：${item.state} / ${item.value == null ? "unknown" : String(item.value)} / 来源 ${item.source || "unknown"} / ${ts(item.observed_at)}</li>`)}</ul></details>` : A}
-    ${inflight.total ? b2`<div class="warn">仍有 ${inflight.total} 项可能在途（${inflight.truncated ? "\u5217\u8868\u622A\u65AD" : "\u542B\u539FID\u672A\u77E5"}，不承诺撤回/退费）：</div><ul>${(inflight.items || []).map((item) => b2`<li>${item.attempt_id || item.input_id} / ${item.message_id} / v${item.policy_revision} / ${item.model} / ${item.cost} / ${ts(item.issued_at)}${item.older_policy ? "\uFF08\u65E7\u7B56\u7565\u8FC7\u6E21\u4E2D\uFF09" : ""}</li>`)}</ul>` : b2`<div class="muted">当前无已记录在途许可；这不证明未纳管路线或内部调用已停止。</div>`}
+    ${inflight.total ? b2`<div class="warn">仍有 ${inflight.total} 项可能在途（${inflight.truncated ? "\u5217\u8868\u622A\u65AD" : "\u542B\u539FID\u672A\u77E5"}，不承诺撤回/退费）：</div><ul>${(inflight.items || []).map((item) => b2`<li>${item.attempt_id || item.input_id} / ${item.message_id} / v${item.policy_revision} / ${item.model} / ${item.cost} / ${ts(item.issued_at)}${item.older_policy ? " \xB7 \u4F7F\u7528\u65E7\u7B56\u7565" : ""}</li>`)}</ul>` : b2`<div class="muted">当前无已记录在途许可；这不证明未纳管路线或内部调用已停止。</div>`}
     ${policyForm(view, "task", task.id)}
     ${projectView ? policyForm(projectView, "project", task.project) : A}
   </section>`;
@@ -1193,34 +1332,34 @@ var emptyPlan = () => ({
     evidence: null
   }]
 });
-var labels = { real: "\u771F\u5B9E\u63A5\u5165", mock: "mock\uFF08\u4EC5\u6A21\u62DF\uFF0C\u65E0\u771F\u5B9E\u4FDD\u5B58\uFF09", placeholder: "\u5360\u4F4D\uFF08\u672A\u5B9E\u73B0\uFF09", blocked: "\u53D7\u963B\uFF08\u4E0D\u53EF\u7528\uFF09" };
+var labels2 = { real: "\u771F\u5B9E\u63A5\u5165", mock: "\u6A21\u62DF\u6570\u636E", placeholder: "\u5C1A\u672A\u5B9E\u73B0", blocked: "\u6682\u4E0D\u53EF\u7528" };
 function renderPrototype(task, view) {
   if (!view) return A;
-  if (view.ok !== true) return b2`<section><h3>原型范围与缺口</h3><div class="bad">权威记录不可读：${view.code || "unknown"}；不是空清单，不放行编辑。</div></section>`;
+  if (view.ok !== true) return b2`<section><h3>原型范围与缺口</h3><div class="bad">无法读取原型记录 · ${view.code || "\u672A\u77E5\u9519\u8BEF"}。恢复读取后可编辑。</div></section>`;
   const plan = view.current?.plan, key = `prototype:${task.id}`;
   const draft = state.prototypeDrafts.get(task.id) || {};
   const pending = pendingPolicy(key);
   const selected = plan?.features.find((f3) => f3.id === state.prototypeSelected.get(task.id));
   return b2`<section class="policy-panel"><h3>原型范围与缺口 / v${view.revision}</h3>
-    <div class="warn">仅验证本轮声明范围；计划/菜单可点≠检查通过，登记≠修复，不降低原Task正式验收。</div>
+    <div class="warn">此处记录原型计划。检查结果和修复证据见任务验收。</div>
     ${plan ? b2`<dl class="kv"><dt>验证问题</dt><dd>${plan.question}</dd><dt>体验入口</dt><dd>${plan.entry}</dd>
-      <dt>启动方法（仅文本）</dt><dd><code>${plan.startup}</code></dd><dt>声明检查（须另行实跑）</dt><dd>${plan.checks.join("\uFF1B")}</dd>
+      <dt>启动说明</dt><dd><code>${plan.startup}</code></dd><dt>计划运行的检查</dt><dd>${plan.checks.join("\uFF1B")}</dd>
       <dt>代表路径</dt><dd>${plan.paths.map((p4) => b2`<div>${p4.id}：${p4.features.join(" \u2192 ")}</div>`)}</dd></dl>
-      <div class="op-panel">${plan.features.map((f3) => b2`<button data-act="prototypefeature" data-task=${task.id} data-feature=${f3.id}>${f3.title} · ${labels[f3.state] || "unknown"}</button>`)}</div>
-      ${selected ? b2`<div role="status" data-prototype-detail class="attn rank-mid"><strong>${selected.title}：${labels[selected.state]}</strong>
-        <div>数据/副作用边界：${selected.source}。此处只查看声明，不调用业务API或伪报保存成功。</div><div>权威缺口：${selected.gap_ids.join("\u3001") || "\u65E0\u5EF6\u671F\u5173\u8054\uFF1B\u771F\u5B9E\u9A8C\u6536\u4ECD\u8D70collect/verify"}</div></div>` : A}
-      <div>未闭环 ${view.unresolved?.length ?? "unknown"} 项；记账不等于修复。</div>
+      <div class="op-panel">${plan.features.map((f3) => b2`<button data-act="prototypefeature" data-task=${task.id} data-feature=${f3.id}>${f3.title} · ${labels2[f3.state] || "unknown"}</button>`)}</div>
+      ${selected ? b2`<div role="status" data-prototype-detail class="attn rank-mid"><strong>${selected.title}：${labels2[selected.state]}</strong>
+        <div>数据来源与影响 · ${selected.source}。这里只展示计划。</div><div>待解决事项 · ${selected.gap_ids.join("\u3001") || "\u65E0\u5EF6\u671F\u5173\u8054\uFF1B\u771F\u5B9E\u9A8C\u6536\u4ECD\u8D70collect/verify"}</div></div>` : A}
+      <div>未闭环 ${view.unresolved?.length ?? "unknown"} 项。</div>
       ${plan.gaps.map((g2) => b2`<details><summary>${g2.id} / ${g2.kind} / ${g2.state} / 风险 ${g2.risk}</summary>
         <dl class="kv"><dt>期望/现状</dt><dd>${g2.expected} / ${g2.current}</dd><dt>原因/影响</dt><dd>${g2.reason} / ${g2.impact}</dd>
           <dt>责任/下一动作</dt><dd>${g2.owner} / ${g2.next_action}</dd><dt>回访</dt><dd>${g2.review_at}</dd><dt>引用</dt><dd>${g2.refs.join("\uFF1B")}</dd>
           <dt>后续Task/修复证据</dt><dd>${g2.followup_task || "\u539FTask"} / ${g2.evidence ? `${g2.evidence.attempt_id}@${g2.evidence.verified_at}` : "\u672A\u4FEE\u590D\uFF0C\u65E0\u6B63\u5F0F\u8BC1\u636E"}</dd></dl></details>`)}
-      <details><summary>保留的原Task承诺</summary><pre>${JSON.stringify(view.commitment, null, 2)}</pre></details>` : b2`<div class="muted">尚无原型计划；不代表无缺口或原型已验收。</div>`}
-    ${!ro() && !view.read_only ? b2`<details><summary>显式更新原型计划与缺口（不改Task验收）</summary>
+      <details><summary>保留的原Task承诺</summary><pre>${JSON.stringify(view.commitment, null, 2)}</pre></details>` : b2`<div class="muted">尚无原型计划。</div>`}
+    ${!ro() && !view.read_only ? b2`<details><summary>编辑原型计划</summary>
       <form data-form="prototype" data-task=${task.id} data-revision=${view.revision}>
         <label>计划JSON <textarea name="plan" rows="12" .value=${draft.plan ?? JSON.stringify(plan || emptyPlan(), null, 2)}></textarea></label>
         <label>更新原因 <input name="reason" .value=${draft.reason ?? ""}></label><label>逐字确认Task <input name="confirm" placeholder=${task.id} .value=${draft.confirm ?? ""}></label>
         ${pending ? b2`<div class="warn">原操作待对账：${pending.body.operation_id}；不换ID重投。</div>
-          <button type="button" data-act="prototyperecheck" data-task=${task.id}>只读核对原记录</button>` : b2`<button type="submit" ?disabled=${state.busyActions.has(key)}>保存声明与责任（不是完成验收）</button>`}
+          <button type="button" data-act="prototyperecheck" data-task=${task.id}>只读核对原记录</button>` : b2`<button type="submit" ?disabled=${state.busyActions.has(key)}>保存原型计划</button>`}
       </form></details>` : A}</section>`;
 }
 
@@ -1232,17 +1371,17 @@ function renderTask(id, data = {}) {
   const ver = cur && cur.verification ? cur.verification : {};
   const eff = t5.effective_coordinator;
   const src = t5.coordinator_source;
-  const coordinator = eff ? b2`<a href=${`#/coordinator/${encodeURIComponent(eff)}`}><code class="mono">${eff}</code></a><div class="muted">${src === "lease" ? "\u9879\u76EE\u79DF\u7EA6\u5F52\u5C5E\uFF08\u672A\u663E\u5F0F\u7ED1\u5B9A\u5230\u672C\u9879\u76EE\u79DF\u7EA6\u6301\u6709\u8005\uFF09" : "\u663E\u5F0F\u7ED1\u5B9A"}</div>` : b2`<span class="warn">未绑定</span><div class="muted">无显式 coordinator_session 且无项目租约持有者</div>`;
+  const coordinator = eff ? b2`<a href=${`#/coordinator/${encodeURIComponent(eff)}`}>${state.coordMap[eff]?.title || eff}</a>` : b2`<span class="warn">尚未分配</span>`;
   const acts = [];
   if (!ro()) {
-    if (t5.status === "paused") acts.push(b2`<button data-act="taskresume" data-id=${t5.id}>resume</button>`);
-    else if (!["accepted", "cancelled"].includes(t5.status)) acts.push(b2`<button data-act="taskpause" data-id=${t5.id}>pause</button>`);
+    if (t5.status === "paused") acts.push(b2`<button data-act="taskresume" data-id=${t5.id}>恢复任务</button>`);
+    else if (!["accepted", "cancelled"].includes(t5.status)) acts.push(b2`<button data-act="taskpause" data-id=${t5.id}>暂停任务</button>`);
     if (!["accepted", "cancelled"].includes(t5.status)) acts.push(b2`<button class="danger" data-act="taskcancel" data-id=${t5.id} data-title=${t5.title || t5.id}>取消任务</button>`);
     if (cur && ["result_pending", "result_received", "result_collected", "result_missing"].includes(cur.status)) {
-      acts.push(b2`<button class="primary" data-act="verify" data-id=${cur.id} data-pass="1">verify pass</button>`);
-      acts.push(b2`<button data-act="verify" data-id=${cur.id} data-pass="0">verify fail</button>`);
+      acts.push(b2`<button class="primary" data-act="verify" data-id=${cur.id} data-pass="1">通过验收</button>`);
+      acts.push(b2`<button data-act="verify" data-id=${cur.id} data-pass="0">验收不通过</button>`);
     }
-    if (cur) acts.push(b2`<button data-act="collect" data-id=${cur.id}>collect</button>`);
+    if (cur) acts.push(b2`<button data-act="collect" data-id=${cur.id}>收集结果</button>`);
   }
   const canRework = !ro() && cur && !["paused", "cancelled", "accepted"].includes(t5.status) && [
     "terminal_succeeded",
@@ -1256,36 +1395,38 @@ function renderTask(id, data = {}) {
   const historyNote = data.attempts_truncated ? `\uFF0C\u4EC5\u6700\u8FD1 ${attempts.length} \u6761` : "";
   return b2`<div class="breadcrumb"><a href="#/">总览</a> <span class="sep">/</span> <a href="#/tasks">全局任务</a> <span class="sep">/</span> <span>${t5.title || t5.id}</span></div>
     <div class="row"><h2>${t5.title || t5.id}</h2>${badge(t5.status)}<span class="spacer"></span>${copyButton(t5.id)}</div>
-    <dl class="kv">
+    <div class="task-context"><span>${t5.project || "\u9879\u76EE\u672A\u77E5"}</span><span>调度者 · ${coordinator}</span></div>
+    ${t5.blocked_reason ? b2`<div class="attn rank-mid"><strong>受阻原因</strong>${t5.blocked_reason}</div>` : A}
+    <div class="task-brief">
+      <section><h3>目标</h3><pre>${t5.objective || "\u5C1A\u672A\u586B\u5199"}</pre></section>
+      <section><h3>验收标准</h3><pre>${Array.isArray(t5.acceptance) ? t5.acceptance.join("\n") || "\u5C1A\u672A\u586B\u5199" : t5.acceptance || "\u5C1A\u672A\u586B\u5199"}</pre></section>
+    </div>
+    <details class="scope"><summary>任务信息与时间</summary><dl class="kv">
       <dt>任务 ID</dt><dd><code class="mono">${t5.id}</code></dd>
-      <dt>项目</dt><dd>${t5.project || "-"}</dd>
-      <dt>协调者</dt><dd>${coordinator}</dd>
-      <dt>创建</dt><dd>${ts(t5.created_at)}</dd>
+      ${eff ? b2`<dt>调度会话</dt><dd><code class="mono">${eff}</code> · ${src === "lease" ? "\u7531\u9879\u76EE\u8C03\u5EA6\u8005\u8D1F\u8D23" : "\u4EFB\u52A1\u5355\u72EC\u6307\u5B9A"}</dd>` : A}
+      <dt>创建时间</dt><dd>${ts(t5.created_at)}</dd>
       <dt>最近更新</dt><dd>${ts(t5.updated_at)}</dd>
-      <dt>已验收/关闭</dt><dd>${ts(t5.accepted_at)} / ${ts(t5.closed_at)}</dd>
+      <dt>验收 / 关闭时间</dt><dd>${ts(t5.accepted_at)} / ${ts(t5.closed_at)}</dd>
       <dt>期限 / 下次检查</dt><dd>${ts(t5.deadline_at)} / ${ts(t5.next_check_at)}</dd>
-    </dl>
-    ${t5.blocked_reason ? b2`<div class="attn rank-mid"><span>受阻原因：${t5.blocked_reason}</span></div>` : A}
-    <h3>目标</h3><pre>${t5.objective || "-"}</pre>
-    <h3>验收标准</h3><pre>${t5.acceptance || "-"}</pre>
-    ${renderDeliveryPolicy(t5, data.delivery_policy, data.project_delivery_policy)}
-    ${renderPrototype(t5, data.prototype)}
-    <h3>当前尝试${cur ? b2`（g${cur.generation}）` : A}</h3>
+    </dl></details>
+    <h3>当前尝试${cur ? b2` · 第 ${cur.generation} 次` : A}</h3>
     ${cur ? b2`<dl class="kv">
-      <dt>Attempt</dt><dd><a href=${`#/attempt/${encodeURIComponent(cur.id)}`}><code class="mono">${cur.id}</code></a></dd>
-      <dt>状态</dt><dd>${badge(cur.status)} / dispatch ${badge(cur.dispatch_state || "-")}</dd>
-      <dt>执行 session</dt><dd><code class="mono">${cur.session_id || "-"}</code></dd>
+      <dt>尝试 ID</dt><dd><a href=${`#/attempt/${encodeURIComponent(cur.id)}`}><code class="mono">${cur.id}</code></a></dd>
+      <dt>状态</dt><dd>${badge(cur.status)} · 派单 ${badge(cur.dispatch_state || "-")}</dd>
+      <dt>执行会话</dt><dd><code class="mono">${cur.session_id || "-"}</code></dd>
       <dt>创建/最近进展</dt><dd>${ts(cur.created_at)} / ${ts(cur.last_progress_at)}</dd>
-      ${ver.result ? b2`<dt>验收</dt><dd>${badge(ver.result)} （${ver.classification || "-"}，${ts(ver.verified_at)}，actor=${ver.actor || "-"}）</dd>` : A}
+      ${ver.result ? b2`<dt>验收</dt><dd>${badge(ver.result)} · ${ver.classification || "-"} · ${ts(ver.verified_at)} · 验收人 ${ver.actor || "-"}</dd>` : A}
       ${ver.missing && ver.missing.length ? b2`<dt>未满足</dt><dd class="bad">${ver.missing.join("\u3001")}</dd>` : A}
     </dl><div class="note">执行与证据详情见 <a href=${`#/attempt/${encodeURIComponent(cur.id)}`}>尝试详情</a>。</div>` : b2`<div class="empty">当前无尝试。</div>`}
-    <h3>任务操作${ro() ? "\uFF08read-only \u4E0D\u53EF\u5199\uFF09" : ""}</h3>
-    <div class="op-panel">${acts.length ? acts : b2`<span class="muted">当前状态无可执行操作${ro() ? " / read-only" : ""}</span>`}</div>
+    <h3>任务操作${ro() ? " \xB7 \u53EA\u8BFB" : ""}</h3>
+    <div class="op-panel">${acts.length ? acts : b2`<span class="muted">当前状态无可执行操作${ro() ? " \xB7 \u53EA\u8BFB" : ""}</span>`}</div>
     <div id="taskFormHost">${renderVerifyForm("task:" + id)}</div>
     ${canRework ? renderReworkForm(t5.id) : A}
-    <h3>历史尝试（${data.attempts_full_count ?? 0}${historyNote}）</h3>
-    <div class="tablewrap"><table><thead><tr><th>Attempt</th><th>g</th><th>状态</th><th>结果路径</th><th>验收</th></tr></thead><tbody>
-      ${attempts.length ? c4(attempts, (a3) => a3.id, (a3) => b2`<tr><td><a href=${`#/attempt/${encodeURIComponent(a3.id)}`}><code class="mono">${a3.id}</code></a></td><td>${a3.generation}</td><td>${badge(a3.status)}</td><td class="mono">${a3.result_path || "-"}</td><td>${a3.verification && a3.verification.result ? b2`${badge(a3.verification.result)} ${a3.verification.classification || ""}` : b2`<span class="muted">-</span>`}</td></tr>`) : b2`<tr><td colspan="5" class="muted">(none)</td></tr>`}
+    ${renderDeliveryPolicy(t5, data.delivery_policy, data.project_delivery_policy)}
+    ${renderPrototype(t5, data.prototype)}
+    <h3>历史尝试 · ${data.attempts_full_count ?? attempts.length} 次${historyNote}</h3>
+    <div class="tablewrap"><table><thead><tr><th>尝试 ID</th><th>次数</th><th>状态</th><th>结果路径</th><th>验收</th></tr></thead><tbody>
+      ${attempts.length ? c4(attempts, (a3) => a3.id, (a3) => b2`<tr><td><a href=${`#/attempt/${encodeURIComponent(a3.id)}`}><code class="mono">${a3.id}</code></a></td><td>${a3.generation}</td><td>${badge(a3.status)}</td><td class="mono">${a3.result_path || "-"}</td><td>${a3.verification && a3.verification.result ? b2`${badge(a3.verification.result)} ${a3.verification.classification || ""}` : b2`<span class="muted">-</span>`}</td></tr>`) : b2`<tr><td colspan="5" class="muted">暂无记录</td></tr>`}
     </tbody></table></div>`;
 }
 
@@ -1296,141 +1437,118 @@ function renderAttempt(id, data = {}) {
   const acts = [];
   if (!ro()) {
     if (["result_pending", "result_received", "result_collected", "result_missing"].includes(a3.status)) {
-      acts.push(b2`<button class="primary" data-act="verify" data-id=${a3.id} data-pass="1">verify pass</button>`);
-      acts.push(b2`<button data-act="verify" data-id=${a3.id} data-pass="0">verify fail</button>`);
+      acts.push(b2`<button class="primary" data-act="verify" data-id=${a3.id} data-pass="1">通过验收</button>`);
+      acts.push(b2`<button data-act="verify" data-id=${a3.id} data-pass="0">验收不通过</button>`);
     }
-    if (a3.id) acts.push(b2`<button data-act="collect" data-id=${a3.id}>collect</button>`);
+    if (a3.id) acts.push(b2`<button data-act="collect" data-id=${a3.id}>收集结果</button>`);
   }
   const dels = data.deliverables || [];
-  const verdict = ver && ver.result ? b2`<div class="attn ${ver.result === "pass" ? "" : "rank-high"}" style=${ver.result === "pass" ? "border-color:#2ea04388" : "border-color:#f8514955"}><span>${badge(ver.result)} ${ver.classification || ""} · ${ts(ver.verified_at)} · actor=${ver.actor || "-"}${ver.force_reason ? b2` · force：${ver.force_reason}` : A}${ver.reason ? b2` · 原因：${ver.reason}` : A}</span>${ver.missing && ver.missing.length ? b2`<div class="note bad">未满足：${ver.missing.join("\u3001")}${(ver.unmet || []).length ? `\uFF1B\u672A\u6EE1\u8DB3\u9879 ${JSON.stringify(ver.unmet)}` : ""}</div>` : A}${ver.evidence && ver.evidence.length ? b2`<div class="note">证据：<code class="mono">${ver.evidence.join("\uFF1B")}</code></div>` : A}</div>` : b2`<div class="note">尚无验收结论。任务只按此结论显示 accepted，通知 ACK 不算验收。</div>`;
+  const verdict = ver && ver.result ? b2`<div class="attn ${ver.result === "pass" ? "" : "rank-high"}" style=${ver.result === "pass" ? "border-color:#2ea04388" : "border-color:#f8514955"}><span>${badge(ver.result)} ${ver.classification || ""} · ${ts(ver.verified_at)} · 验收人 ${ver.actor || "-"}${ver.force_reason ? b2` · 强制通过原因 ${ver.force_reason}` : A}${ver.reason ? b2` · 原因：${ver.reason}` : A}</span>${ver.missing && ver.missing.length ? b2`<div class="note bad">未满足：${ver.missing.join("\u3001")}${(ver.unmet || []).length ? `\uFF1B\u672A\u6EE1\u8DB3\u9879 ${JSON.stringify(ver.unmet)}` : ""}</div>` : A}${ver.evidence && ver.evidence.length ? b2`<div class="note">证据：<code class="mono">${ver.evidence.join("\uFF1B")}</code></div>` : A}</div>` : b2`<div class="note">尚无验收结论。</div>`;
   return b2`<div class="breadcrumb"><a href="#/">总览</a> <span class="sep">/</span> <a href=${`#/task/${encodeURIComponent(a3.task_id || "")}`}>任务 ${a3.task_id || ""}</a> <span class="sep">/</span> <span>${a3.id}</span></div>
     <div class="row"><h2>尝试 ${a3.id}</h2>${badge(a3.status)}<span class="spacer"></span>${copyButton(a3.id)}</div>
     <dl class="kv">
-      <dt>任务</dt><dd><a href=${`#/task/${encodeURIComponent(a3.task_id || "")}`}><code class="mono">${a3.task_id || "-"}</code></a> · ${data.task ? data.task.title : ""}（${data.task ? badge(data.task.status) : A}）</dd>
-      <dt>代次 / 派单</dt><dd>g${a3.generation} · dispatch ${badge(a3.dispatch_state || "-")}${a3.dispatch_msg_id ? b2` <code class="mono">${a3.dispatch_msg_id}</code>` : A}</dd>
-      <dt>执行 session</dt><dd><code class="mono">${a3.session_id || "-"}</code></dd>
+      <dt>任务</dt><dd><a href=${`#/task/${encodeURIComponent(a3.task_id || "")}`}><code class="mono">${a3.task_id || "-"}</code></a> · ${data.task ? data.task.title : ""} ${data.task ? badge(data.task.status) : A}</dd>
+      <dt>代次 / 派单</dt><dd>第 ${a3.generation} 次 · ${badge(a3.dispatch_state || "-")}${a3.dispatch_msg_id ? b2` <code class="mono">${a3.dispatch_msg_id}</code>` : A}</dd>
+      <dt>执行会话</dt><dd><code class="mono">${a3.session_id || "-"}</code></dd>
       <dt>目录</dt><dd><code class="mono">${a3.directory || "-"}</code></dd>
       <dt>创建 / 派单 / 启动</dt><dd>${ts(a3.created_at)} / ${ts(a3.dispatched_at)} / ${ts(a3.started_at)}</dd>
       <dt>最近进展 / 观察</dt><dd>${ts(a3.last_progress_at)} / ${ts(a3.last_observed_at)}</dd>
       <dt>停止请求 / 已确认 / 现场释放</dt><dd>${ts(a3.stop_requested_at)} / ${ts(a3.stop_confirmed_at)} / ${ts(a3.site_released_at)}</dd>
       <dt>结果收集</dt><dd>${ts(a3.result_collected_at)}</dd>
-      <dt>终态</dt><dd>${ts(a3.terminal_at)}（${a3.terminal_kind || "-"}）${a3.terminal_reason ? b2`<div class="note">${a3.terminal_reason}</div>` : A}</dd>
+      <dt>终态</dt><dd>${ts(a3.terminal_at)} · ${a3.terminal_kind || "-"}${a3.terminal_reason ? b2`<div class="note">${a3.terminal_reason}</div>` : A}</dd>
     </dl>
     <h3>验收结论</h3>
     ${verdict}
     <h3>结果摘要</h3><pre class="log">${a3.result_summary || "-"}</pre>
     ${a3.result_path ? b2`<div class="note">结果路径：<code class="mono">${a3.result_path}</code></div>` : A}
-    <h3>尝试操作${ro() ? "\uFF08read-only\uFF09" : ""}</h3>
-    <div class="op-panel" id="attOps">${acts.length ? acts : b2`<span class="muted">当前状态无可执行操作${ro() ? " / read-only" : ""}</span>`}</div>
+    <h3>尝试操作${ro() ? " \xB7 \u53EA\u8BFB" : ""}</h3>
+    <div class="op-panel" id="attOps">${acts.length ? acts : b2`<span class="muted">当前状态无可执行操作${ro() ? " \xB7 \u53EA\u8BFB" : ""}</span>`}</div>
     <div id="attemptFormHost">${renderVerifyForm("attempt:" + id)}</div>
-    <h3>交付清单（${dels.length}）</h3>
+    <h3>交付清单 · ${dels.length} 项</h3>
     <div class="tablewrap"><table><thead><tr><th>交付物</th><th>类型</th><th>状态</th><th>检查时间</th><th>证据</th></tr></thead><tbody>
-      ${dels.length ? c4(dels, (d5) => `${d5.target || ""}:${d5.kind || ""}`, (d5) => b2`<tr><td class="mono">${d5.target || ""}</td><td>${d5.kind || ""}</td><td>${badge(d5.status || "-")}</td><td>${ts(d5.checked_at)}</td><td class="mono">${d5.evidence ? JSON.stringify(d5.evidence) : "-"}</td></tr>`) : b2`<tr><td colspan="5" class="muted">(none)</td></tr>`}
+      ${dels.length ? c4(dels, (d5) => `${d5.target || ""}:${d5.kind || ""}`, (d5) => b2`<tr><td class="mono">${d5.target || ""}</td><td>${d5.kind || ""}</td><td>${badge(d5.status || "-")}</td><td>${ts(d5.checked_at)}</td><td class="mono">${d5.evidence ? JSON.stringify(d5.evidence) : "-"}</td></tr>`) : b2`<tr><td colspan="5" class="muted">暂无记录</td></tr>`}
     </tbody></table></div>`;
 }
 
 // src/views/tasks.js
+function taskTable(list, { unbound = false, empty = "\u6682\u65E0\u4EFB\u52A1" } = {}) {
+  return b2`<div class="tablewrap task-table"><table><thead><tr>
+    <th>任务</th><th>状态</th>${unbound ? A : b2`<th>指定调度者</th>`}<th>${unbound ? "\u6700\u8FD1\u66F4\u65B0" : "\u6700\u8FD1\u8FDB\u5C55"}</th>
+    </tr></thead><tbody>${list.length ? c4(list, (t5) => t5.id, (t5) => b2`<tr>
+      <td><a class="task-title" href=${`#/task/${encodeURIComponent(t5.id)}`}>${t5.title || t5.id}</a>
+        <div class="note">${t5.project} <code>${t5.id}</code></div></td>
+      <td>${badge(t5.status)}${t5.blocked_reason ? b2`<div class="note">${t5.blocked_reason}</div>` : A}</td>
+      ${unbound ? A : b2`<td>${t5.coordinator_session ? b2`<a href=${`#/coordinator/${encodeURIComponent(t5.coordinator_session)}`}>${state.coordMap[t5.coordinator_session]?.title || t5.coordinator_session}</a>` : "\u672A\u5355\u72EC\u6307\u5B9A"}</td>`}
+      <td>${ts(unbound ? t5.updated_at : t5.last_progress_at)}</td>
+    </tr>`) : b2`<tr><td colspan=${unbound ? 3 : 4}>${empty}</td></tr>`}</tbody></table></div>`;
+}
 function renderTasksView() {
-  const snap = state.snap || {};
+  const tasks = state.snap?.tasks || [];
+  const total = state.snap?.counts?.tasks;
   const q = (state.search || "").toLowerCase().trim();
-  let list = snap.tasks || [];
-  const total = snap.counts && snap.counts.tasks != null ? b2`全库 ${snap.counts.tasks} 项；当前快照载入 ${list.length} 项（≤200，超限任务不计入本列表）` : b2`当前快照 ${list.length} 项`;
-  if (q) {
-    list = list.filter((t5) => (t5.id || "").toLowerCase().includes(q) || (t5.title || "").toLowerCase().includes(q) || (t5.project || "").toLowerCase().includes(q));
-  }
-  return b2`<h2>全局任务检索</h2>
-    <div class="row" style="margin-bottom:10px"><label class="inline" style="flex:1;max-width:480px">按 ID / 标题 / 项目过滤
-      <input type="text" id="taskSearch" value=${state.search} placeholder="输入关键字过滤当前快照"></label><span class="muted">${total}</span></div>
-    <div class="tablewrap"><table><thead><tr><th>Task</th><th>标题</th><th>状态</th><th>协调者</th><th>进展</th></tr></thead><tbody>
-      ${list.length ? c4(list, (t5) => t5.id, (t5) => b2`<tr><td><a href=${`#/task/${encodeURIComponent(t5.id)}`}><code class="mono">${t5.id}</code></a><div class="muted">${t5.project || ""}</div></td><td><a href=${`#/task/${encodeURIComponent(t5.id)}`}>${t5.title || ""}</a></td><td>${badge(t5.status)}${t5.blocked_reason ? b2`<div class="muted">${t5.blocked_reason}</div>` : A}</td><td>${t5.coordinator_session ? b2`<a href=${`#/coordinator/${encodeURIComponent(t5.coordinator_session)}`}><code class="mono">${t5.coordinator_session}</code></a>` : b2`<span class="warn">未绑定</span>`}</td><td>${ts(t5.last_progress_at)}</td></tr>`) : b2`<tr><td colspan="5" class="muted">${q ? "\u65E0\u5339\u914D" : "(none)"}</td></tr>`}
-    </tbody></table></div>`;
+  const list = q ? tasks.filter((t5) => [t5.id, t5.title, t5.project].some((v3) => v3?.toLowerCase().includes(q))) : tasks;
+  return b2`<h2>全局任务</h2>
+    <div class="row"><label class="search-field"><input type="text" id="taskSearch" value=${state.search}
+      aria-label="搜索已加载的任务" placeholder="搜索任务标题、项目或 ID"></label>
+      <span class="note">${q ? `\u627E\u5230 ${list.length} \u9879 \xB7 ` : ""}已加载 ${tasks.length} 项${total != null ? `\uFF0C\u5171 ${total} \u9879` : ""}</span></div>
+    ${taskTable(list, { empty: q ? "\u6CA1\u6709\u5339\u914D\u7684\u4EFB\u52A1" : "\u6682\u65E0\u4EFB\u52A1" })}`;
 }
 function renderUnboundTasks() {
   const rows = state.unboundRows || [];
-  return b2`<h2>未绑定任务（全量 ${state.unboundFull} 项）</h2>
-    <div class="note">未绑定 = 无显式 coordinator_session 且其 project 无项目租约持有者；全量 keyset 分页（按任务 ID 升序），不受快照 200 项限制，不无界一次性输出。</div>
-    <div class="tablewrap"><table><thead><tr><th>Task</th><th>标题</th><th>状态</th><th>受阻</th><th>最近更新</th></tr></thead><tbody>
-      ${rows.length ? c4(rows, (t5) => t5.id, (t5) => b2`<tr><td><a href=${`#/task/${encodeURIComponent(t5.id)}`}><code class="mono">${t5.id}</code></a><div class="muted">${t5.project || ""}</div></td><td><a href=${`#/task/${encodeURIComponent(t5.id)}`}>${t5.title || ""}</a></td><td>${badge(t5.status)}</td><td>${t5.blocked_reason || "-"}</td><td>${ts(t5.updated_at)}</td></tr>`) : b2`<tr><td colspan="5" class="muted">(none)</td></tr>`}
-    </tbody></table></div>
-    <div class="op-panel"><span class="note">已加载 ${rows.length} / ${state.unboundFull} 项 · 按任务 ID 升序</span><span class="spacer"></span>${state.unboundTruncated ? b2`<button class="primary" data-act="unboundmore" ?disabled=${state.unboundLock}>继续加载</button>` : A}<a href="#/tasks">返回任务检索</a></div>`;
+  return b2`<div class="breadcrumb"><a href="#/">总览</a> / 待分配任务</div>
+    <h2>待分配任务</h2><p class="note">这些任务尚无调度者负责。已加载 ${rows.length} 项，共 ${state.unboundFull} 项。</p>
+    ${taskTable(rows, { unbound: true, empty: "\u6682\u65E0\u5F85\u5206\u914D\u4EFB\u52A1" })}
+    <div class="op-panel">${state.unboundTruncated ? b2`<button class="primary" data-act="unboundmore" ?disabled=${state.unboundLock}>继续加载</button>` : A}<a href="#/tasks">查看全局任务</a></div>`;
 }
 
 // src/views/diagnostics.js
-var MANAGED_VALUES = {
-  ok: ["delivered", "succeeded", "acknowledged", "admitted", "recorded"],
-  blocked: ["prepared", "possible", "pending", "unknown", "unacknowledged", "not-applicable"],
-  bad: ["cancelled", "failed", "interrupted"]
-};
-function managedBadge(v3) {
-  if (v3 == null || v3 === "") return b2`<span class="muted">-</span>`;
-  const s5 = String(v3);
-  if (MANAGED_VALUES.ok.includes(s5)) return b2`<span class="badge b-valid">${s5}</span>`;
-  if (MANAGED_VALUES.blocked.includes(s5)) return b2`<span class="badge b-blocked">${s5}</span>`;
-  if (MANAGED_VALUES.bad.includes(s5)) return b2`<span class="badge b-expired">${s5}</span>`;
-  return b2`<span class="badge">${s5}</span>`;
-}
 var managedSession = (i8) => i8.session_id || i8.session || "-";
-function watchEnabledBadge(v3) {
-  if (v3 === true) return b2`<span class="badge b-valid">enabled</span>`;
-  if (v3 === false) return b2`<span class="badge b-expired">disabled</span>`;
-  return b2`<span class="muted">-</span>`;
-}
-function obsTrustBadge(v3) {
-  if (v3 === true) return b2`<span class="badge b-valid">trusted</span>`;
-  if (v3 === false) return b2`<span class="badge b-expired">untrusted</span>`;
-  return b2`<span class="badge b-blocked">unknown</span>`;
-}
-function watchObservation(w2) {
-  const obs = w2 && w2.last_observation;
-  if (!obs || typeof obs !== "object" || !Object.keys(obs).length) return b2`<span class="muted">unknown / 未观察</span>`;
-  return b2`pending ${obs.pending == null ? "-" : obs.pending} · age ${obs.oldest_age_ms == null ? "-" : fmtAge(obs.oldest_age_ms)} ${obsTrustBadge(obs.trusted)}${obs.aged_out === true ? b2` <span class="badge b-blocked">aged_out</span>` : A}${obs.stale === true ? b2` <span class="badge b-blocked">stale</span>` : A}${obs.blocking_reason != null ? b2` <span class="muted">blocking ${obs.blocking_reason}</span>` : A}${w2.last_observed_at ? b2`<div class="muted">observed ${ts(w2.last_observed_at)}</div>` : A}${obs.next_action ? b2`<div class="muted">next ${obs.next_action}</div>` : A}`;
-}
 function notifSection(ns) {
   return b2`<section id="diag-notif" aria-label="通知与告警">
-    <h2>通知（回执与 ACK 分开记账：ACK 只关闭收件责任，不等于任务验收）</h2>
+    <h2>通知</h2>
     <div class="row" style="margin-bottom:8px">
-      <span class="muted" id="notifMeta">当前快照 ${ns.length} 条（pending/inflight/sent 上限 50；sent_unacked 未含）</span>
+      <span class="muted" id="notifMeta">已列出 ${ns.length} 条通知</span>
       <span class="spacer"></span>
-      <button id="ackCheckedBtn" data-act="ackchecked" class="primary" ?disabled=${ro()}>ACK 勾选通知</button>
+      <button id="ackCheckedBtn" data-act="ackchecked" class="primary" ?disabled=${ro()}>确认收到所选通知</button>
     </div>
-    <div class="tablewrap"><table id="notifTable"><thead><tr><th>ID / Kind</th><th>State</th><th>Target</th><th>摘要</th><th>Last error</th></tr></thead><tbody>
-      ${ns.length ? c4(ns, (n4) => n4.id, (n4) => b2`<tr><td><label class="inline"><input type="checkbox" class="noteck" data-id=${n4.id} checked> <code class="mono">${n4.id}</code></label><div class="muted">${n4.kind}</div></td><td>${badge(n4.state)}</td><td><code class="mono">${n4.target_session || "-"}</code>${n4.task_id || n4.attempt_id ? b2`<div class="muted">${n4.task_id || ""} ${n4.attempt_id || ""}</div>` : A}</td><td>${n4.summary || ""}${n4.missing_deliverables && n4.missing_deliverables.length ? b2`<div class="bad">missing ${n4.missing_deliverables.join("\u3001")}</div>` : A}</td><td class="mono">${n4.last_error || "-"}</td></tr>`) : b2`<tr><td colspan="5" class="muted">(none)</td></tr>`}
+    <div class="tablewrap"><table id="notifTable"><thead><tr><th>编号 / 类型</th><th>状态</th><th>目标会话</th><th>摘要</th><th>最近错误</th></tr></thead><tbody>
+      ${ns.length ? c4(ns, (n4) => n4.id, (n4) => b2`<tr><td><label class="inline"><input type="checkbox" class="noteck" data-id=${n4.id} checked> <code class="mono">${n4.id}</code></label><div class="muted">${n4.kind}</div></td><td>${badge(n4.state)}</td><td><code class="mono">${n4.target_session || "-"}</code>${n4.task_id || n4.attempt_id ? b2`<div class="muted">${n4.task_id || ""} ${n4.attempt_id || ""}</div>` : A}</td><td>${n4.summary || ""}${n4.missing_deliverables && n4.missing_deliverables.length ? b2`<div class="bad">missing ${n4.missing_deliverables.join("\u3001")}</div>` : A}</td><td class="mono">${n4.last_error || "-"}</td></tr>`) : b2`<tr><td colspan="5" class="muted">暂无记录</td></tr>`}
     </tbody></table></div>
-    <div class="note">批量 ACK 只处理当前勾选且可见的通知；勾选数量在确认框中列出具体 ID 集合。read_only 模式禁用。</div>
+    <div class="note">确认收到后，任务仍需单独验收。</div>
   </section>`;
 }
-function alertSection(alerts) {
+function alertSection(alerts, title = "\u544A\u8B66") {
   return b2`<section id="diag-alerts" aria-label="告警">
-    <h2>告警（无法归属到项目的全局故障独立可见）</h2>
+    <h2>${title}</h2>
     <div class="row" style="margin-bottom:8px">
-      <span class="muted" id="alertMeta">当前快照 ${alerts.length} 条新告警（上限 50）</span>
+      <span class="muted" id="alertMeta">当前快照中有 ${alerts.length} 条，上限 50 条</span>
       <span class="spacer"></span>
-      <button id="ackAlertsBtn" data-act="ackalerts" class="primary" ?disabled=${ro()}>ACK 勾选告警</button>
+      <button id="ackAlertsBtn" data-act="ackalerts" class="primary" ?disabled=${ro()}>确认所选告警</button>
     </div>
     <div class="tablewrap"><table id="alertTable"><thead><tr><th>ID</th><th>级别</th><th>标题</th><th>归属</th><th>详情</th></tr></thead><tbody>
-      ${alerts.length ? c4(alerts, (a3) => a3.id, (a3) => b2`<tr><td><label class="inline"><input type="checkbox" class="alck" data-id=${a3.id} checked> <code class="mono">${a3.id}</code></label></td><td>${a3.severity || ""}</td><td>${badge(a3.kind)} ${a3.title || ""}</td><td>${a3.task_id || a3.attempt_id ? b2`<span class="muted">task ${a3.task_id || ""} attempt ${a3.attempt_id || ""}</span>` : b2`<span class="warn">无归属（全局）</span>`}</td><td><details><summary class="muted">查看原文</summary><pre>${a3.detail || ""}</pre></details></td></tr>`) : b2`<tr><td colspan="5" class="muted">(none)</td></tr>`}
+      ${alerts.length ? c4(alerts, (a3) => a3.id, (a3) => b2`<tr><td><label class="inline"><input type="checkbox" class="alck" data-id=${a3.id} checked> <code class="mono">${a3.id}</code></label></td><td>${a3.severity || ""}</td><td>${badge(a3.kind)} ${a3.title || ""}</td><td>${a3.task_id || a3.attempt_id ? b2`<span class="muted">task ${a3.task_id || ""} attempt ${a3.attempt_id || ""}</span>` : b2`<span class="warn">未关联任务</span>`}</td><td><details><summary class="muted">查看原文</summary><pre>${a3.detail || ""}</pre></details></td></tr>`) : b2`<tr><td colspan="5" class="muted">暂无记录</td></tr>`}
     </tbody></table></div>
-    <div class="note">只 ACK 勾选且可见的告警；详情可展开阅读原文。read_only 模式禁用。</div>
+
   </section>`;
 }
 function gatesSection() {
   const coords = state.coordList.map((sid) => state.coordMap[sid]).filter(Boolean);
   return b2`<section id="diag-gates" aria-label="协调者解锁">
-    <h2>协调者解锁（manual 与 provider 恢复调度均需原因 + UNLOCK 确认）</h2>
-    <div id="gatesRoot"><div class="tablewrap"><table><thead><tr><th>Session</th><th>闸门</th><th></th></tr></thead><tbody>
+    <h2>恢复调度</h2>
+    <div id="gatesRoot"><div class="tablewrap"><table><thead><tr><th>会话</th><th>调度限制</th><th></th></tr></thead><tbody>
       ${coords.length ? c4(coords, (c5) => c5.session, (c5) => {
     const ua = unlockActionFor(c5);
     return b2`<tr><td><a href=${`#/coordinator/${encodeURIComponent(c5.session)}`}><code class="mono">${c5.session}</code></a></td><td>${(c5.gates || []).length ? c5.gates.map(gateBadge) : b2`<span class="muted">无闸门</span>`}</td><td>${ua ? b2`<button class="danger" data-act="unlock" data-sid=${c5.session} data-project=${ua.project} data-allow-provider=${ua.allowProvider ? "1" : "0"} ?disabled=${ro()}>${ua.label}</button>` : b2`<span class="muted">无可执行操作</span>`}</td></tr>`;
-  }) : b2`<tr><td colspan="3" class="muted">(none)</td></tr>`}
+  }) : b2`<tr><td colspan="3" class="muted">暂无记录</td></tr>`}
     </tbody></table></div></div>
-    <div class="note">manual 闸门 → 解锁 manual（清除人工中断）；provider 冷却/耗尽/半开未知 → 恢复调度（把闸门复位为 probe-ready，新错误仍会重新冷却）。原因必填、须输入 UNLOCK 确认；read_only 模式禁用。</div>
+    <div class="note">解除限制需要填写原因并输入 UNLOCK。遇到服务商限制时，恢复后会先重新探测。</div>
   </section>`;
 }
 function supSection() {
-  return b2`<section id="diag-supervisor" aria-label="Supervisor 生命周期">
-    <h2>Supervisor 生命周期</h2>
-    <div class="op-panel" id="supRoot"><button class="primary" data-act="supstart" ?disabled=${ro()}>启动 Supervisor</button><button class="danger" data-act="supstop" ?disabled=${ro()}>停止 Supervisor</button></div>
-    <div class="note">启动/停止需输入 START / STOP 确认；read_only 模式下禁用。</div>
+  return b2`<section id="diag-supervisor" aria-label="后台调度服务">
+    <h2>后台调度服务</h2>
+    <div class="op-panel" id="supRoot"><button class="primary" data-act="supstart" ?disabled=${ro()}>启动调度服务</button><button class="danger" data-act="supstop" ?disabled=${ro()}>停止调度服务</button></div>
+    <div class="note">启动需输入 START，停止需输入 STOP。</div>
   </section>`;
 }
 function leasesSection(snap) {
@@ -1438,40 +1556,39 @@ function leasesSection(snap) {
   const back = snap.provider_backoffs || {};
   const gates = snap.target_gates || [];
   return b2`<section id="diag-leases" aria-label="租约与退避">
-    <h2>协调者租约 / Provider 退避</h2>
-    <div id="meta"><div class="note">原始台账事实（租约有效不代表在线；provider 退避为只读）</div>
+    <h2>项目租约与服务商限制</h2>
+    <details id="meta"><summary>查看原始记录</summary>
       <h3>Leases</h3><pre>${JSON.stringify(leases, null, 1)}</pre>
       <h3>Provider backoff</h3><pre>${JSON.stringify(back, null, 1)}</pre>
       <h3>Target gates</h3><pre>${JSON.stringify(gates, null, 1)}</pre>
-    </div>
-    <div class="note">展示原始台账事实；租约有效不代表 session 在线，页面在调度者卡片上单独显示在线状态。</div>
+    </details>
   </section>`;
 }
 function sendSection() {
   const r4 = ro();
   return b2`<section id="diag-sup-input" aria-label="发送受管输入">
-    <h2>发送受管输入（execute / park / record）</h2>
+    <h2>发送会话指令</h2>
     <div id="sendFormHost"><form id="sendForm" data-form="send" class="row">
-      <label>session<input type="text" name="session" placeholder="ses_…" required ?disabled=${r4}></label>
-      <label>intent<input type="text" name="intent" value="execute" required ?disabled=${r4}></label>
+      <label>会话 ID<input type="text" name="session" placeholder="ses_…" required ?disabled=${r4}></label>
+      <label>处理方式<select name="intent" ?disabled=${r4}><option value="execute">执行</option><option value="park">暂存</option><option value="record">仅记录</option></select></label>
       <label>文本<input type="text" name="text" required ?disabled=${r4}></label>
-      <label>owner<input type="text" name="owner" required ?disabled=${r4}></label>
-      <label>request_id<input type="text" name="request_id" required ?disabled=${r4}></label>
-      <label>project<input type="text" name="project" ?disabled=${r4}></label>
-      <label>task<input type="text" name="task" ?disabled=${r4}></label>
-      <label>attempt<input type="text" name="attempt" ?disabled=${r4}></label>
-      <label>target_session<input type="text" name="target_session" ?disabled=${r4}></label>
+      <label>负责人<input type="text" name="owner" required ?disabled=${r4}></label>
+      <label>请求 ID<input type="text" name="request_id" required ?disabled=${r4}></label>
+      <label>项目<input type="text" name="project" ?disabled=${r4}></label>
+      <label>任务 ID<input type="text" name="task" ?disabled=${r4}></label>
+      <label>尝试 ID<input type="text" name="attempt" ?disabled=${r4}></label>
+      <label>目标会话<input type="text" name="target_session" ?disabled=${r4}></label>
       <button class="primary" type="submit" ?disabled=${r4}>发送</button>
     </form></div>
-    <div class="note">写请求经既有守卫（X-OC-Orch-Web + Origin + read_only）；read_only 模式下禁用。受理 ≠ 投递 ≠ 执行 ≠ 业务 ACK。</div>
+    <div class="note">可在指令记录中查看投递和执行进度。</div>
   </section>`;
 }
 function managedSection(inputs, watches) {
   const r4 = ro();
   return b2`<section id="diag-managed" aria-label="受管输入与白名单">
-    <h2>受管输入 / 白名单观察</h2>
-    <div class="muted" id="managedMeta">${inputs.length} 个输入 · ${watches.length} 条白名单（列表不含正文；受理≠投递≠执行≠业务ACK）</div>
-    <div class="tablewrap"><table><thead><tr><th>Input / Message</th><th>Session</th><th>Owner</th><th>Intent</th><th>受理</th><th>投递</th><th>执行</th><th>业务ACK</th><th>年龄 / 下一动作</th><th>操作</th></tr></thead><tbody id="managedBody">
+    <h2>指令记录与会话观察</h2>
+    <div class="muted" id="managedMeta">已读取 ${inputs.length} 条指令 · ${watches.length} 个观察会话</div>
+    <div class="tablewrap"><table><thead><tr><th>指令 / 消息</th><th>会话</th><th>负责人</th><th>处理方式</th><th>受理</th><th>投递</th><th>执行</th><th>处理确认</th><th>年龄 / 下一动作</th><th>操作</th></tr></thead><tbody id="managedBody">
       ${inputs.length ? c4(inputs, (i8) => i8.input_id || i8.message_id || JSON.stringify(i8), (i8) => b2`<tr>
         <td><code class="mono">${i8.input_id || "-"}</code><div class="muted">${i8.message_id || "-"}</div></td>
         <td><code class="mono">${managedSession(i8)}</code></td>
@@ -1482,11 +1599,11 @@ function managedSection(inputs, watches) {
         <td>${managedBadge(i8.execution)}</td>
         <td>${managedBadge(i8.business_ack)}</td>
         <td>${fmtAge(i8.pending_age_ms)}<div class="muted">next ${i8.next_action || "-"}</div></td>
-        <td>${r4 ? "-" : b2`${["flush", "cancel"].map((a3) => b2`<button data-managed=${a3} data-id=${i8.input_id} data-rev=${i8.revision == null ? "" : i8.revision}>${a3}</button>`)}${i8.business_ack !== "acknowledged" ? b2`<button class="primary" data-managed="ack" data-id=${i8.input_id} data-rev=${i8.revision == null ? "" : i8.revision}>ack</button>` : A}`}</td>
-      </tr>`) : b2`<tr><td colspan="10" class="muted">(none)</td></tr>`}
+        <td>${r4 ? "-" : b2`${["flush", "cancel"].map((a3) => b2`<button data-managed=${a3} data-id=${i8.input_id} data-rev=${i8.revision == null ? "" : i8.revision}>${a3 === "flush" ? "\u7ACB\u5373\u6295\u9012" : "\u53D6\u6D88"}</button>`)}${i8.business_ack !== "acknowledged" ? b2`<button class="primary" data-managed="ack" data-id=${i8.input_id} data-rev=${i8.revision == null ? "" : i8.revision}>确认处理</button>` : A}`}</td>
+      </tr>`) : b2`<tr><td colspan="10" class="muted">暂无记录</td></tr>`}
     </tbody></table></div>
-    <div class="muted" style="margin-top:8px">白名单（仅显式登记分支；观察只补事实/告警，不自动接管；本页只读，不发远端 observe/reconcile）</div>
-    <div class="tablewrap"><table><thead><tr><th>Session</th><th>Owner</th><th>Project</th><th>状态</th><th>Max-Pending-Age</th><th>Revision / Pending</th><th>最近观察</th><th>下一动作</th></tr></thead><tbody id="watchBody">
+    <div class="muted" style="margin-top:8px">已登记的观察会话</div>
+    <div class="tablewrap"><table><thead><tr><th>会话</th><th>负责人</th><th>项目</th><th>状态</th><th>最长等待时间</th><th>版本 / 待处理</th><th>最近观察</th><th>下一动作</th></tr></thead><tbody id="watchBody">
       ${watches.length ? c4(watches, (w2) => w2.session_id || w2.session || JSON.stringify(w2), (w2) => b2`<tr>
         <td><code class="mono">${w2.session_id || w2.session || "-"}</code></td>
         <td>${w2.owner || "-"}</td>
@@ -1496,16 +1613,16 @@ function managedSection(inputs, watches) {
         <td>${w2.revision == null ? "-" : w2.revision}${w2.pending_count != null ? b2`<div class="muted">pending ${w2.pending_count}</div>` : A}</td>
         <td>${watchObservation(w2)}</td>
         <td>${w2.next_action || "-"}</td>
-      </tr>`) : b2`<tr><td colspan="8" class="muted">(none)</td></tr>`}
+      </tr>`) : b2`<tr><td colspan="8" class="muted">暂无记录</td></tr>`}
     </tbody></table></div>
-    <div class="note">输入列表只读展示；flush / cancel / ack 在下方操作区逐行执行（需输入 ID 确认与 revision），不会顺带处理未列出项。</div>
+    <div class="note">操作前需输入对应的指令 ID。</div>
   </section>`;
 }
-function respSection(resp) {
+function respSection(resp, title = "\u5F85\u8DDF\u8FDB\u4E8B\u9879") {
   return b2`<section>
-    <h2>后续责任（谁在等待什么）</h2>
-    <div class="muted" id="respMeta">${resp.length} 条未关闭后续责任（当前读取 ≤200，超限不含；ACK 不关闭责任；Task accepted 仍须 verify）</div>
-    <div class="tablewrap"><table><thead><tr><th>ID / 状态</th><th>Task / Attempt</th><th>Owner → Target</th><th>等待条件</th><th>下一动作</th><th>期限 / 预算</th></tr></thead><tbody id="respBody">
+    <h2>${title}</h2>
+    <div class="muted" id="respMeta">当前列出 ${resp.length} 条，从最多 200 条未关闭事项中读取。</div>
+    <div class="tablewrap"><table><thead><tr><th>ID / 状态</th><th>任务 / 尝试</th><th>负责人 / 目标</th><th>等待条件</th><th>下一动作</th><th>期限 / 预算</th></tr></thead><tbody id="respBody">
       ${resp.length ? c4(resp, (x2) => x2.id || JSON.stringify(x2), (r4) => b2`<tr>
         <td><code class="mono">${r4.id || "-"}</code><div>${managedBadge(r4.state)}</div></td>
         <td>${r4.task_id || "-"}<div class="muted">${r4.attempt_id || ""} g=${r4.generation == null ? "-" : r4.generation} rv=${r4.result_version || "-"}</div></td>
@@ -1513,9 +1630,9 @@ function respSection(resp) {
         <td>${r4.wait_kind || "-"}<div class="muted">${r4.wait_condition || "-"}</div></td>
         <td>${r4.next_action || "-"}<div class="muted">next_check ${ts(r4.next_check_at)}</div></td>
         <td>${r4.deadline == null ? "-" : ts(r4.deadline)}<div class="muted">budget ${r4.budget_used == null ? "-" : r4.budget_used}/${r4.max_budget == null ? "-" : r4.max_budget} · rev ${r4.revision == null ? "-" : r4.revision}</div></td>
-      </tr>`) : b2`<tr><td colspan="6" class="muted">(none)</td></tr>`}
+      </tr>`) : b2`<tr><td colspan="6" class="muted">暂无记录</td></tr>`}
     </tbody></table></div>
-    <div class="note">责任与通知 ACK 分开记账：ACK 只关闭收件责任；Task accepted 仍须 verify。本页只读。</div>
+
   </section>`;
 }
 function auditSection() {
@@ -1523,8 +1640,8 @@ function auditSection() {
   const auditKey = (a3) => a3.id != null ? String(a3.id) : `${a3._i}|${a3.at || 0}|${a3.action || ""}|${a3.entity || ""}|${a3.entity_id || ""}|${a3.from_state || ""}|${a3.to_state || ""}|${a3.actor || ""}`;
   return b2`<section>
     <h2>最近审计</h2>
-    <div class="tablewrap"><table><thead><tr><th>时间</th><th>Actor</th><th>Action</th><th>Entity</th><th>From → To</th></tr></thead><tbody id="auditBody">
-      ${audit.length ? c4(audit, auditKey, (a3) => b2`<tr><td>${ts(a3.at)}</td><td>${a3.actor || "-"}</td><td>${a3.action || "-"}</td><td>${a3.entity || ""} ${a3.entity_id || ""}</td><td>${a3.from_state || ""} → ${a3.to_state || ""}</td></tr>`) : b2`<tr><td colspan="5" class="muted">(none)</td></tr>`}
+    <div class="tablewrap"><table><thead><tr><th>时间</th><th>操作者</th><th>操作</th><th>对象</th><th>状态变化</th></tr></thead><tbody id="auditBody">
+      ${audit.length ? c4(audit, auditKey, (a3) => b2`<tr><td>${ts(a3.at)}</td><td>${a3.actor || "-"}</td><td>${a3.action || "-"}</td><td>${a3.entity || ""} ${a3.entity_id || ""}</td><td>${a3.from_state || ""} → ${a3.to_state || ""}</td></tr>`) : b2`<tr><td colspan="5" class="muted">暂无记录</td></tr>`}
     </tbody></table></div>
   </section>`;
 }
@@ -1534,8 +1651,8 @@ function bizHealthSection() {
   const tasks = body?.tasks || [];
   const proc = body?.process || {};
   const runtime = body?.runtime || {};
-  const procLine = proc.healthy == null ? b2`<span class="muted">进程健康未知</span>` : proc.healthy ? b2`<span class="ok">进程 healthy</span> ${proc.connected != null ? `connected=${proc.connected}` : ""}${proc.heartbeat_age_s != null ? b2` · 心跳 ${proc.heartbeat_age_s}s 前` : ""}` : b2`<span class="bad">进程 unhealthy</span>`;
-  const scopeNote = body?.coverage ? body.coverage.complete ? "\u8986\u76D6\u5B8C\u6574" : `\u90E8\u5206\u8986\u76D6\uFF08\u5F53\u524D\u663E\u793A ${tasks.length} \u9879\uFF09` : "\u8986\u76D6\u672A\u77E5";
+  const procLine = proc.healthy == null ? b2`<span class="muted">进程健康未知</span>` : proc.healthy ? b2`<span class="ok">进程正常</span> ${proc.connected != null ? `connected=${proc.connected}` : ""}${proc.heartbeat_age_s != null ? b2` · 心跳 ${proc.heartbeat_age_s}s 前` : ""}` : b2`<span class="bad">进程异常</span>`;
+  const scopeNote = body?.coverage ? body.coverage.complete ? "\u8986\u76D6\u5B8C\u6574" : `\u90E8\u5206\u8986\u76D6 \xB7 \u5DF2\u663E\u793A ${tasks.length} \u9879` : "\u8986\u76D6\u672A\u77E5";
   const trow = (t5) => {
     const c5 = t5.control || {};
     const resp = (t5.responsibilities || [])[0] || {};
@@ -1564,53 +1681,58 @@ function bizHealthSection() {
   else if (runtime.source) runtimeBits.push(b2`<span class="muted">${runtime.source}</span>`);
   if (runtime.package_version) runtimeBits.push(b2`包版本 ${runtime.package_version}`);
   return b2`<section id="diag-bizhealth" aria-label="业务健康">
-    <h2>业务健康（只读投影；进程健康 ≠ 业务进展/完成）</h2>
-    <div class="note">${body?.semantics || ""}（${scopeNote}）${state.healthErr ? b2` <span class="bad">刷新失败，保留旧数据</span>` : A}</div>
+    <h2>业务健康</h2>
+    <div class="note">任务完成以验收结论为准。 ${scopeNote}${state.healthErr ? b2` <span class="bad">刷新失败，保留旧数据</span>` : A}</div>
     <div class="note">${procLine}</div>
-    <div class="tablewrap"><table><thead><tr><th>Task</th><th>状态</th><th>Owner</th><th>下一动作</th><th>期限 / 下次检查</th><th>预算</th><th>证据</th><th>控制（意图/hold/回合/provider）</th></tr></thead><tbody>
+    <div class="tablewrap"><table><thead><tr><th>任务</th><th>状态</th><th>负责人</th><th>下一动作</th><th>期限 / 下次检查</th><th>预算</th><th>证据</th><th>调度限制</th></tr></thead><tbody>
       ${tasks.length ? c4(tasks, (t5) => t5.task_id || JSON.stringify(t5), trow) : b2`<tr><td colspan="8" class="muted">${h5 ? "\u5F53\u524D\u65E0\u672A\u5B8C\u6210\u4E1A\u52A1\u5065\u5EB7\u8BB0\u5F55\u3002" : "\u5065\u5EB7\u6570\u636E\u672A\u52A0\u8F7D\u3002"}</td></tr>`}
     </tbody></table></div>
-    <div class="note" id="runtimeIdentity">运行身份：${runtimeBits.length ? runtimeBits : b2`-`}。邮件提醒默认关闭、native 对话 hook 未启用（均以 health.runtime 返回为准，不读取/信任 Git 版本自报）。</div>
+    <div class="note" id="runtimeIdentity">运行版本 · ${runtimeBits.length ? runtimeBits : b2`未知`}${runtime.email_default_enabled === false ? " \xB7 \u90AE\u4EF6\u9ED8\u8BA4\u5173\u95ED" : ""}</div>
   </section>`;
 }
 function incidentsSection() {
   const items = state.incidents || [];
   const st = state.incidentStatus || {};
   const coverage = st.coverage || {};
-  const chTxt = st.channel === "not-configured" ? "not-configured\uFF08\u90AE\u4EF6\u9ED8\u8BA4\u5173\u95ED\uFF0C\u4E0D\u53D1\u4FE1\uFF09" : st.channel || "-";
+  const chTxt = st.channel === "not-configured" ? "\u672A\u914D\u7F6E" : st.channel || "-";
   return b2`<section id="diag-incidents" aria-label="本地人工待办">
-    <h2>本地人工待办（incidents；只读）</h2>
-    <div class="muted" id="incidentMeta">已加载 ${items.length} / 持久候选 ${st.total ?? "\u672A\u77E5"} 条 · ${coverage.scope_complete === true ? "\u8986\u76D6\u5B8C\u6574" : "\u90E8\u5206\u8986\u76D6\u6216\u672A\u77E5"} · channel=${chTxt} · recipient_refs=${(st.recipient_refs || []).join(",") || "\u65E0"}${st.email_configured != null ? b2` · email_configured=${st.email_configured}` : A}</div>
+    <h2>本地人工待办</h2>
+    <div class="muted" id="incidentMeta">已加载 ${items.length} / 共 ${st.total ?? "\u672A\u77E5"} 条 · ${coverage.scope_complete === true ? "\u8986\u76D6\u5B8C\u6574" : "\u90E8\u5206\u8986\u76D6\u6216\u672A\u77E5"} · 提醒渠道 ${chTxt} · 收件人 ${(st.recipient_refs || []).join(",") || "\u65E0"}${st.email_configured != null ? b2` · 邮件${st.email_configured ? "\u5DF2\u914D\u7F6E" : "\u672A\u914D\u7F6E"}` : A}</div>
     ${coverage.invalid_records || coverage.unattributed_records ? b2`<div class="warn">存在损坏或不可归属记录，不能据空列表认定无人工待办。</div>` : A}
-    ${coverage.next_after_id ? b2`<div class="note">后页游标：<code>${coverage.next_after_id}</code>（CLI incidents --after-id 续读，不推进自动扫描游标）</div>` : A}
-    <div class="tablewrap"><table><thead><tr><th>ID / 类型</th><th>状态</th><th>Owner → Task</th><th>下一动作</th><th>期限 / 首次</th><th>通道</th></tr></thead><tbody>
+    ${coverage.next_after_id ? b2`<div class="note">后页游标：<code>${coverage.next_after_id}</code> · 可使用 incidents --after-id 查看后续记录</div>` : A}
+    <div class="tablewrap"><table><thead><tr><th>ID / 类型</th><th>状态</th><th>负责人 / 任务</th><th>下一动作</th><th>期限 / 首次</th><th>通道</th></tr></thead><tbody>
       ${items.length ? c4(items, (i8) => i8.incident_id || JSON.stringify(i8), (it) => b2`<tr>
         <td><code class="mono">${it.incident_id || "-"}</code><div class="muted">${it.incident_type || "-"} · ${it.source_kind || ""}${it.escalation_level ? ` \xB7 esc ${it.escalation_level}` : ""}</div></td>
         <td>${badge(it.state)}</td><td>${it.owner || "-"} → ${it.task_id || "-"}</td>
         <td>${it.next_action || "-"}</td>
         <td>${it.deadline ? ts(it.deadline) : ts(it.first_seen_at)}</td>
-        <td>${it.channel || "-"}</td></tr>`) : b2`<tr><td colspan="6" class="muted">${coverage.scope_complete === true ? "\u5F53\u524D\u8303\u56F4\u65E0\u767B\u8BB0\u8BB0\u5F55\uFF08\u4E0D\u662F\u4E1A\u52A1\u5B8C\u6210\u8BC1\u660E\uFF09" : "\u5F53\u524D\u9875\u65E0\u53EF\u8BFB\u8BB0\u5F55\uFF0C\u5B8C\u6574\u8303\u56F4\u5C1A\u672A\u8BC1\u660E"}</td></tr>`}
+        <td>${it.channel || "-"}</td></tr>`) : b2`<tr><td colspan="6" class="muted">${coverage.scope_complete === true ? "\u5F53\u524D\u8303\u56F4\u6CA1\u6709\u767B\u8BB0\u7684\u5F85\u529E" : "\u5F53\u524D\u9875\u65E0\u53EF\u8BFB\u8BB0\u5F55\uFF0C\u5B8C\u6574\u8303\u56F4\u5C1A\u672A\u8BC1\u660E"}</td></tr>`}
     </tbody></table></div>
-    <div class="note">仅展示本地可行动待办与通道状态；不调用 reconcile、不主动发送邮件。邮件启用以独立授权为准，health.runtime.email_default_enabled=false 不代表执行器进程级状态，本页不自行声称已启用。</div>
   </section>`;
 }
-function renderDiagnostics() {
+function renderDiagnostics(section) {
   const snap = state.snap || {};
   const ns = snap.notifications || [];
   const alerts = snap.alerts || [];
   const inputs = state.inputs || [];
   const watches = state.watches || [];
   const resp = state.resp || [];
-  return b2`<h2>系统诊断（只读区为表格；写操作为独立受控表单）</h2>
+  if (section) {
+    const showAlerts = section === "alerts";
+    const title = showAlerts ? "\u672A\u5173\u8054\u4EFB\u52A1\u7684\u544A\u8B66" : "\u5176\u4ED6\u8D1F\u8D23\u4EBA\u5F85\u529E";
+    return b2`<div class="breadcrumb"><a href="#/">总览</a> / <a href="#/diagnostics">系统诊断</a></div>
+      ${showAlerts ? alertSection(alerts.filter((a3) => !a3.task_id && !a3.attempt_id), title) : state.coordMeta ? respSection(resp.filter((r4) => !state.coordMap[r4.owner]), title) : b2`<h2>${title}</h2><p>无法读取会话归属。</p>`}`;
+  }
+  return b2`<h2>系统诊断</h2>
     ${notifSection(ns)}
     ${alertSection(alerts)}
+    ${respSection(resp)}
+    ${incidentsSection()}
     ${gatesSection()}
     ${supSection()}
     ${leasesSection(snap)}
     ${sendSection()}
     ${managedSection(inputs, watches)}
-    ${respSection(resp)}
-    ${incidentsSection()}
     ${bizHealthSection()}
     ${auditSection()}`;
 }
@@ -1621,14 +1743,17 @@ function parseHash() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
     if (parts[0] === "tasks") return { view: "tasks", unbound: parts[1] === "unbound" };
-    if (parts[0] === "diagnostics") return { view: "diagnostics" };
+    if (parts[0] === "diagnostics") {
+      const section = ["alerts", "responsibilities"].includes(parts[1]) ? parts[1] : "";
+      return { view: "diagnostics", section };
+    }
     if (parts[0] === "coordinator") return { view: "coordinator", sid: decodeURIComponent(parts[1] || "") };
     if (["task", "attempt"].includes(parts[0])) return { view: parts[0], id: decodeURIComponent(parts[1] || "") };
   } catch {
   }
   return { view: "overview" };
 }
-var routeKey = (route = parseHash()) => `${route.view}:${route.sid || route.id || (route.unbound ? "unbound" : "")}`;
+var routeKey = (route = parseHash()) => `${route.view}:${route.sid || route.id || route.section || (route.unbound ? "unbound" : "")}`;
 var needDetail = (route) => ["coordinator", "task", "attempt"].includes(route.view) || !!route.unbound;
 var routeGeneration = () => generation;
 function routeIsCurrent(key, version) {
@@ -2314,7 +2439,7 @@ async function recheckPrototype(task) {
 }
 
 // src/actions.js
-var RO_TOAST = "read-only\uFF1A\u6B64\u64CD\u4F5C\u88AB\u540E\u7AEF\u62D2\u7EDD\uFF08\u5F53\u524D\u4E3A\u53EA\u8BFB\u5FEB\u7167\uFF09";
+var RO_TOAST = "\u5F53\u524D\u4E3A\u53EA\u8BFB\u6A21\u5F0F";
 async function guard(key, fn) {
   if (ro()) {
     toast(RO_TOAST);
@@ -2326,7 +2451,7 @@ async function guard(key, fn) {
   try {
     await fn();
   } catch (error) {
-    toast(error.message || "\u64CD\u4F5C\u5931\u8D25\uFF08\u672A\u91CD\u8BD5\uFF0C\u8BF7\u624B\u52A8\u91CD\u8BD5\uFF09");
+    toast(error.message || "\u64CD\u4F5C\u5931\u8D25\uFF0C\u8BF7\u67E5\u770B\u6700\u65B0\u72B6\u6001");
   } finally {
     state.busyActions.delete(key);
     publish();
@@ -2362,7 +2487,7 @@ function taskCancel(id) {
       alert("\u786E\u8BA4\u4E0D\u5339\u914D");
       return;
     }
-    const interrupt = confirm("\u540C\u65F6\u5C1D\u8BD5 interrupt \u6267\u884C session\uFF1F");
+    const interrupt = confirm("\u540C\u65F6\u8BF7\u6C42\u4E2D\u65AD\u6267\u884C\u4F1A\u8BDD\uFF1F");
     await post(`/api/task/${encodeURIComponent(id)}/cancel`, { reason, confirm: c5, interrupt });
     toast("\u5DF2\u53D6\u6D88");
     await refreshLight();
@@ -2370,7 +2495,8 @@ function taskCancel(id) {
 }
 function collect(id) {
   guard(`collect:${id}`, async () => {
-    if (!confirm(`collect ${id}\uFF1F`)) return;
+    if (!confirm(`\u6536\u96C6\u672C\u6B21\u5C1D\u8BD5\u7684\u7ED3\u679C\uFF1F
+${id}`)) return;
     await post(`/api/attempt/${encodeURIComponent(id)}/collect`, {});
     toast("\u5DF2\u6536\u96C6");
     await refreshLight();
@@ -2423,10 +2549,12 @@ function closeVerify(el) {
 function unlock(sid, project, allowProvider) {
   guard(`unlock:${sid}`, async () => {
     if (!sid) return;
-    const label = allowProvider ? "\u6062\u590D\u8C03\u5EA6" : "\u89E3\u9501 manual";
-    const reason = prompt(`\u89E3\u9501\u539F\u56E0\uFF08${label}\uFF09`, allowProvider ? "web-provider-recovery" : "web-manual-unlock");
+    const label = allowProvider ? "\u6062\u590D\u8C03\u5EA6" : "\u89E3\u9664\u4EBA\u5DE5\u963B\u585E";
+    const reason = prompt(`\u8BF7\u586B\u5199${label}\u7684\u539F\u56E0`, allowProvider ? "web-provider-recovery" : "web-manual-unlock");
     if (reason === null) return;
-    const c5 = prompt(`\u8F93\u5165 UNLOCK \u786E\u8BA4\uFF08${label} ${sid}\uFF0C\u9879\u76EE ${project || "?"}\uFF09`);
+    const c5 = prompt(`${label} \xB7 ${sid}
+\u9879\u76EE ${project || "?"}
+\u8F93\u5165 UNLOCK \u786E\u8BA4`);
     if (c5 !== "UNLOCK") {
       alert("\u786E\u8BA4\u4E0D\u5339\u914D");
       return;
@@ -2441,9 +2569,9 @@ function unlock(sid, project, allowProvider) {
 }
 function ackNote(id) {
   guard(`acknote:${id}`, async () => {
-    if (!id || !confirm(`ACK \u901A\u77E5 ${id}\uFF1F`)) return;
+    if (!id || !confirm(`\u786E\u8BA4\u6536\u5230\u901A\u77E5 ${id}\uFF1F`)) return;
     await post("/api/notify/ack", { ids: [id] });
-    toast("\u5DF2 ACK");
+    toast("\u5DF2\u786E\u8BA4\u6536\u5230");
     await refreshLight();
   });
 }
@@ -2461,8 +2589,7 @@ function ackChecked(scopeSel, url) {
   if (state.busyActions.has(lock)) return;
   const list = ids.join("\n");
   const kind = url.endsWith("/notify/ack") ? "\u901A\u77E5" : "\u544A\u8B66";
-  if (!confirm(`\u6279\u91CF ACK ${ids.length} \u6761${kind}\uFF1F
-\u96C6\u5408\uFF08\u5171 ${ids.length} \u6761\uFF09\uFF1A
+  if (!confirm(`\u786E\u8BA4\u6240\u9009\u7684 ${ids.length} \u6761${kind}\uFF1F
 ${list}`)) return;
   if (state.busyActions.has(lock)) return;
   state.busyActions.add(lock);
@@ -2470,7 +2597,7 @@ ${list}`)) return;
   (async () => {
     try {
       await post(url, { ids });
-      toast(`\u5DF2 ACK ${ids.length} \u6761`);
+      toast(`\u5DF2\u786E\u8BA4 ${ids.length} \u6761`);
       await refreshLight();
     } catch (error) {
       toast(error.message || "\u64CD\u4F5C\u5931\u8D25");
@@ -2868,7 +2995,7 @@ function sendInput(form) {
   (async () => {
     try {
       await post("/api/input/send", body);
-      toast("\u5DF2\u53D1\u9001\uFF08\u53D7\u7406 \u2260 \u6295\u9012 \u2260 \u6267\u884C \u2260 \u4E1A\u52A1 ACK\uFF09");
+      toast("\u6307\u4EE4\u5DF2\u53D7\u7406\uFF0C\u53EF\u5728\u8BB0\u5F55\u4E2D\u67E5\u770B\u6295\u9012\u8FDB\u5EA6\u3002");
       if (form.isConnected) {
         const cur = new FormData(form);
         let unchanged = true;
@@ -3138,7 +3265,7 @@ var OcOrchApp = class extends i4 {
   }
   diagnosticsBody(route) {
     if (!state.snap && !state.statusErr) return loadingPanel(VIEW_LABEL.diagnostics);
-    return b2`${errorBanner(state.extraErr || state.statusErr)}${renderDiagnostics()}`;
+    return b2`${errorBanner(state.extraErr || state.statusErr || route.section === "responsibilities" && state.coordErr)}${renderDiagnostics(route.section)}`;
   }
   detailBody(route, renderFn) {
     const key = routeKey(route);
@@ -3154,39 +3281,38 @@ var OcOrchApp = class extends i4 {
     return b2`${banner}${renderFn(entry.body)}`;
   }
   headerTemplate(route) {
-    const navId = route.view === "tasks" || route.view === "coordinator" ? "tasks" : route.view === "diagnostics" ? "diagnostics" : "overview";
+    const navId = ["tasks", "task", "attempt"].includes(route.view) ? "tasks" : route.view === "diagnostics" ? "diagnostics" : "overview";
     return b2`
-      <h1><a href="#/" aria-label="返回调度总览">oc-orch 控制面</a></h1>
+      <h1><a class="brand" href="#/" aria-label="返回调度总览"><span class="brand-mark" aria-hidden="true"></span>oc-orch</a></h1>
       <nav id="nav" aria-label="主导航">
-        <a href="#/" data-nav="overview" aria-current=${route.view === "overview" ? "page" : A}>总览</a>
+        <a href="#/" data-nav="overview" aria-current=${navId === "overview" ? "page" : A}>总览</a>
         <a href="#/tasks" data-nav="tasks" aria-current=${navId === "tasks" ? "page" : A}>全局任务</a>
         <a href="#/diagnostics" data-nav="diagnostics" aria-current=${route.view === "diagnostics" ? "page" : A}>系统诊断</a>
       </nav>
-      <span class="spacer"></span>
+      <div class="header-tools">
       ${this.healthTemplate()}
       <label class="inline" title="5 秒自动刷新"><input type="checkbox" id="auto" ?checked=${state.auto}> 自动刷新</label>
       <button id="refreshBtn" data-act="manualrefresh" ?disabled=${state.refreshing || state.busyActions.has("manualrefresh")}>
         ${state.refreshing ? "\u5237\u65B0\u4E2D\u2026" : "\u5237\u65B0"}
-      </button>
+      </button></div>
     `;
   }
   healthTemplate() {
     const s5 = state.snap?.supervisor || {};
     const svc = state.snap?.service || {};
-    const parts = [];
-    if (s5.healthy == null) {
-      parts.push(b2`连接中…`);
-    } else if (s5.healthy) {
-      parts.push(b2`<span class="ok">Supervisor healthy</span> ${s5.pid ?? "-"} connected=${s5.connected ?? "-"}`);
-    } else {
-      parts.push(b2`<span class="bad">Supervisor unhealthy</span>`);
-    }
+    const process = processStatus(s5, state.statusErr);
     const anyErr = state.statusErr || state.coordErr || state.extraErr || Object.keys(state.errors).length > 0;
-    if (anyErr) parts.push(b2`<span class="warn">（部分数据过期/失败）</span>`);
-    if (state.snap) parts.push(b2`<span class="muted">状态 ${fmtAge(Date.now() - state.statusAt)}前 · 调度者 ${fmtAge(Date.now() - state.coordAt)}前</span>`);
-    if (ro()) parts.push(b2`<span class="badge b-blocked">read-only</span>`);
-    if (svc.base) parts.push(b2`<span class="muted">${svc.base}${svc.version ? b2` v${svc.version}` : ""}</span>`);
-    return b2`<span id="health" class="muted">${parts}</span>`;
+    return b2`<details id="health">
+      <summary><span class=${`presence ${process.tone}`}>调度服务${process.text}</span>
+        ${anyErr ? b2`<span class="warn">部分数据过期</span>` : A}
+        ${ro() ? b2`<span class="badge">只读</span>` : A}</summary>
+      <dl class="kv health-detail">
+        <dt>状态更新</dt><dd>${state.statusAt ? fmtAge(Date.now() - state.statusAt) + "\u524D" : "\u5C1A\u672A\u8BFB\u53D6"}</dd>
+        <dt>会话更新</dt><dd>${state.coordAt ? fmtAge(Date.now() - state.coordAt) + "\u524D" : "\u5C1A\u672A\u8BFB\u53D6"}</dd>
+        <dt>进程 ID</dt><dd>${s5.pid ?? "\u672A\u77E5"}</dd>
+        <dt>事件连接</dt><dd>${connectionStatus(s5, state.statusErr)}</dd>
+        ${svc.base ? b2`<dt>服务地址</dt><dd>${svc.base} ${svc.version || ""}</dd>` : A}
+      </dl></details>`;
   }
 };
 function loadingPanel(title) {
@@ -3200,10 +3326,10 @@ function staleBanner(entry) {
 }
 function loadFailedPanel(error) {
   return b2`<h2>加载失败</h2>
-    <div class="attn rank-high"><span>无法读取详情：${error?.message || "\u7F51\u7EDC\u6216\u670D\u52A1\u9519\u8BEF"}（请重试或 <a href="#/">返回总览</a>）。<button data-act="manualrefresh">重试</button></span></div>`;
+    <div class="attn rank-high"><span>无法读取详情：${error?.message || "\u7F51\u7EDC\u6216\u670D\u52A1\u9519\u8BEF"} <button data-act="manualrefresh">重试</button> <a href="#/">返回总览</a></span></div>`;
 }
 function missingPanel(route) {
-  const text = route.view === "coordinator" ? `\u5BF9\u8C61\u4E0D\u5728\u5F53\u524D\u53D1\u73B0\u8303\u56F4\uFF08\u53EF\u80FD\u5DF2\u505C\u7528/\u89E3\u7ED1/\u901A\u77E5\u5DF2\u7ED3\u6E05\uFF09\uFF1A${route.sid}` : `\u5BF9\u8C61\u4E0D\u5B58\u5728\uFF08\u5DF2\u5173\u95ED\u6216\u4ECE\u672A\u767B\u8BB0\uFF09\uFF1A${route.id}`;
+  const text = route.view === "coordinator" ? `\u5F53\u524D\u5217\u8868\u4E2D\u627E\u4E0D\u5230\u8BE5\u4F1A\u8BDD\uFF1A${route.sid}` : `\u627E\u4E0D\u5230\u8BE5\u8BB0\u5F55\uFF1A${route.id}`;
   return b2`<h2>${VIEW_LABEL[route.view] || "\u8BE6\u60C5"}</h2>
     <div class="attn rank-high"><span>${text}。<a href="#/">返回总览</a> · <a href="#/tasks">全局任务</a></span></div>`;
 }

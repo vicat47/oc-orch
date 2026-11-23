@@ -5,14 +5,17 @@ export function parseHash() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   try {
     if (parts[0] === "tasks") return {view: "tasks", unbound: parts[1] === "unbound"};
-    if (parts[0] === "diagnostics") return {view: "diagnostics"};
+    if (parts[0] === "diagnostics") {
+      const section = ["alerts", "responsibilities"].includes(parts[1]) ? parts[1] : "";
+      return {view: "diagnostics", section};
+    }
     if (parts[0] === "coordinator") return {view: "coordinator", sid: decodeURIComponent(parts[1] || "")};
     if (["task", "attempt"].includes(parts[0])) return {view: parts[0], id: decodeURIComponent(parts[1] || "")};
   } catch { /* 错误的编码按总览处理，不中止应用。 */ }
   return {view: "overview"};
 }
 export const routeKey = (route = parseHash()) =>
-  `${route.view}:${route.sid || route.id || (route.unbound ? "unbound" : "")}`;
+  `${route.view}:${route.sid || route.id || route.section || (route.unbound ? "unbound" : "")}`;
 export const needDetail = route =>
   ["coordinator", "task", "attempt"].includes(route.view) || !!route.unbound;
 export const routeGeneration = () => generation;
