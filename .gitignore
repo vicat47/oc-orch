@@ -88,3 +88,6 @@ prompt/
 !src/oc_orch/entrypoints/web_assets/THIRD_PARTY_LICENSES.txt
 !tests/fixtures/http/error_plain.txt
 !tests/fixtures/http/message_page_body_not_object.txt
+
+# 根 README 是唯一对外发布的项目说明；其余 *.md 仍按私有文档忽略。
+!/README.md
