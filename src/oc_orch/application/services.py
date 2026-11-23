@@ -21,14 +21,20 @@ class ResultPort(Protocol):
     def verify(self, attempt_id: str, **intent) -> dict: ...
 
 
+class RouteBlockPort(Protocol):
+    def is_route_blocked(self, route: str, *, now: int | None = None) -> dict | None: ...
+
+
 class Orchestration:
     def __init__(self, ledger: CommandLedger, *, client: Callable[[], OpenCodeClient], results: ResultPort,
-                 clock: Clock, new_id: Callable[[str, int], str]):
+                 clock: Clock, new_id: Callable[[str, int], str],
+                 route_blocks: RouteBlockPort | None = None):
         self.ledger = ledger
         self._client = client
         self.results = results
         self.clock = clock
         self.new_id = new_id
+        self.route_blocks = route_blocks
 
     def ensure_site_free(self, att: dict) -> None:
         if att.get("site_released_at"):
@@ -160,8 +166,24 @@ class Orchestration:
                  dry_run: bool = False, no_prompt: bool = False,
                   deadline: int | None = None, stall_after: int | None = None,
                   takeover_confirmed: bool = False, collaboration: dict | None = None,
-                  work_mode: str = "latency-first") -> dict:
+                  work_mode: str = "latency-first",
+                  _attempt_id: str | None = None,
+                 _message_id: str | None = None,
+                 _provider_failover: dict | None = None,
+                 _deadline_at: int | None = None) -> dict:
         work_mode = normalize_work_mode(work_mode)
+        if (_deadline_at is not None
+                and (type(_deadline_at) is not int or _deadline_at < 0)):
+            raise LedgerError("INVALID_DEADLINE", "恢复期限必须是非负毫秒时间戳")
+        if _provider_failover is not None:
+            required = {"episode_id", "operation_id", "old_attempt_id", "failed_route"}
+            if (not isinstance(_provider_failover, dict)
+                    or set(_provider_failover) != required
+                    or any(not isinstance(_provider_failover.get(key), str)
+                           or not _provider_failover[key].strip()
+                           for key in required)):
+                raise LedgerError("INVALID_FAILOVER_CONTEXT",
+                                  "恢复派单的故障关联身份不完整")
         if collaboration is not None:
             from ..domain.delivery_action import collaboration as collaboration_value
 
@@ -200,17 +222,60 @@ class Orchestration:
             existing_session = self._client().get_session(session)
             if existing_session is None:
                 raise ActionError("usage", f"session 不存在：{session}")
+            if model and model_spec:
+                # F10：复用 session 时请求模型必须与实际模型一致；不一致在
+                # 创建新 Attempt/prompt 之前拒绝（防止台账写目标模型而实际仍在
+                # 旧模型执行——provider-fault-failover 的假切换回归防线）。
+                live = existing_session.get("model") or {}
+                expected_model = {**model_spec}
+                if variant:
+                    expected_model["variant"] = variant
+                from ..domain.failover import models_equal
+                if not models_equal(live, expected_model):
+                    raise LedgerError(
+                        "MODEL_MISMATCH",
+                        f"复用 session {session} 实际模型为 "
+                        f"{live.get('providerID')}/{live.get('id')}，"
+                        f"与请求模型 {model} 不一致；请先显式切换或新建 session")
             directory = (existing_session.get("location") or {}).get("directory") or directory
+        # 故障硬阻断独立于瞬态 backoff；ignore-provider-backoff 不得绕过余额/
+        # 凭据阻断。复用 session 时同时检查 live model，不能省略 --model 绕过。
+        live_route = None
+        if session:
+            live_model = existing_session.get("model") or {}
+            if live_model.get("providerID") and live_model.get("id"):
+                live_route = (f"{live_model['providerID']}/{live_model['id']}"
+                              + (f"#{live_model['variant']}"
+                                 if live_model.get("variant") else ""))
+        requested_route = (model + (f"#{variant}" if variant else "")) if model else live_route
+        if requested_route and self.route_blocks is not None:
+            blocked = self.route_blocks.is_route_blocked(
+                requested_route, now=self.clock.now_ms())
+            if blocked and blocked.get("blocked"):
+                raise LedgerError(
+                    "PROVIDER_HARD_BLOCKED",
+                    f"provider 路线 {requested_route} 因未解除硬故障被阻断；"
+                    "须有独立恢复证据或显式人工处置",
+                    {"route": requested_route, "reason": blocked.get("reason")})
         scope = list(scope or task.get("write_scope") or [directory])
         declared = (task.get("metadata") or {}).get("deliverables") or []
         declared = [d if isinstance(d, str) else str(d["target"])
                     for d in declared if isinstance(d, str) or isinstance(d, dict) and d.get("target")]
         deliverables = list(dict.fromkeys([*declared, *deliverables]))
         checks = list(dict.fromkeys([*((task.get("metadata") or {}).get("checks") or []), *checks]))
-        att_id = self.new_id("A-", 12)
+        if _attempt_id is not None and (not isinstance(_attempt_id, str)
+                                        or not _attempt_id.strip()):
+            raise LedgerError("INVALID_ATTEMPT_ID", "预留 attempt_id 必须是非空字符串")
+        if _message_id is not None and (not isinstance(_message_id, str)
+                                        or not _message_id.strip()):
+            raise LedgerError("INVALID_MESSAGE_ID", "预留 message_id 必须是非空字符串")
+        if no_prompt and _message_id is not None:
+            raise LedgerError("INVALID_MESSAGE_ID", "no_prompt 不接受 message_id")
+        att_id = _attempt_id or self.new_id("A-", 12)
         session_id = session or ("ses_ocorch" + self.new_id("", 16))
         # T15：no_prompt 附着不伪造派单消息；仅真实 prompt 才有 dispatch message
-        msg_id = ("msg_ocorch" + self.new_id("", 16)) if not no_prompt else None
+        msg_id = ((_message_id or ("msg_ocorch" + self.new_id("", 16)))
+                  if not no_prompt else None)
         generation = (self.ledger.get_attempt(cur)["generation"] + 1) if cur else 1
         create_spec = {
             "session_id": session_id, "directory": directory,
@@ -235,6 +300,8 @@ class Orchestration:
                                 work_mode=work_mode)
             return {"dispatch": {"session_id_planned": session_id, "prompt": text, "create": create,
                                   "no_prompt": no_prompt, "work_mode": work_mode},
+                    **({"provider_failover": dict(_provider_failover)}
+                       if _provider_failover is not None else {}),
                     **({"delivery_collaboration": collaboration} if collaboration is not None else {}),
                     "coordinator": coordinator, "deliverables": deliverables, "checks": checks}
 
@@ -242,7 +309,8 @@ class Orchestration:
             task["id"], attempt_id=att_id, directory=directory, session_id=session_id,
             agent=agent, model=model, variant=variant, status="creating",
             dispatch_state="prepared", dispatch_msg_id=msg_id,
-            deadline_at=(self.clock.now_ms() + deadline * 1000 if deadline else None),
+            deadline_at=(_deadline_at if _deadline_at is not None else
+                         self.clock.now_ms() + deadline * 1000 if deadline else None),
             stall_after=stall_after,
             deliverables=deliverables + [{"kind": "command", "target": c} for c in checks],
             write_scope=scope, prepare_metadata=prepare_metadata,
@@ -307,6 +375,36 @@ class Orchestration:
         session_id = session or old["session_id"]
         if not session_id:
             raise ActionError("usage", "旧尝试没有 session；请用 --new-session 走 dispatch")
+        live_session = self._client().get_session(session_id)
+        if not isinstance(live_session, dict) or live_session.get("id") != session_id:
+            raise LedgerError("SESSION_OBSERVATION_UNKNOWN",
+                              f"无法确认返工 session {session_id} 的实际模型")
+        if old.get("model"):
+            provider, _, requested_model = str(old["model"]).partition("/")
+            if not requested_model:
+                raise LedgerError("INVALID_MODEL", "尝试台账中的模型身份格式非法")
+            expected_model = {"providerID": provider, "id": requested_model}
+            if old.get("variant"):
+                expected_model["variant"] = old["variant"]
+            from ..domain.failover import models_equal
+            if not models_equal(live_session.get("model"), expected_model):
+                raise LedgerError(
+                    "MODEL_MISMATCH",
+                    f"返工 session {session_id} 实际模型与旧尝试目标不一致；"
+                    "请先显式切换并确认模型，再创建后继 Attempt")
+        live_model = live_session.get("model") or {}
+        if (live_model.get("providerID") and live_model.get("id")
+                and self.route_blocks is not None):
+            route = f"{live_model['providerID']}/{live_model['id']}"
+            if live_model.get("variant"):
+                route += f"#{live_model['variant']}"
+            blocked = self.route_blocks.is_route_blocked(
+                route, now=self.clock.now_ms())
+            if blocked and blocked.get("blocked"):
+                raise LedgerError(
+                    "PROVIDER_HARD_BLOCKED",
+                    f"provider 路线 {route} 因未解除硬故障被阻断，返工前须显式处置",
+                    {"route": route, "reason": blocked.get("reason")})
         att_id, msg_id = self.new_id("A-", 12), "msg_ocorch" + self.new_id("", 16)
         work_mode = normalize_work_mode(work_mode)
         text = (f"返工/继续通知（任务 {task_id} / 新尝试 {att_id} / 第 {generation} 次尝试）。\n"

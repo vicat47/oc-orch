@@ -180,6 +180,9 @@ class IncidentBase(unittest.TestCase):
 
         # 同 session 返工（事故路径）：默认保留 worker session
         self.clock._wall = new_started - 60_000
+        # rework 会将服务端实际模型与旧 Attempt 目标核对；明确记录事故夹具的
+        # p/m 观察值，不能让 FakeClient 的 None 充当模型事实。
+        self.client.set_session(worker, model={"providerID": "p", "id": "m"})
         out = self.app.rework(task["id"], feedback="修订报告；其余沿用已有产物")
         new_att = self.ledger.get_attempt(out["attempt_id"])
         # 模拟服务端投递本轮输入并真正开始执行

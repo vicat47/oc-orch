@@ -75,8 +75,13 @@ FAILURE_CLASSES = frozenset({"unknown", "transient", "rate-limited", "auth",
 SOURCE_KIND_RESPONSIBILITY = "responsibility"
 SOURCE_KIND_TASK = "task"
 SOURCE_KIND_INCIDENT = "incident"
-SOURCE_KINDS = frozenset({SOURCE_KIND_RESPONSIBILITY, SOURCE_KIND_TASK,
-                          SOURCE_KIND_INCIDENT})
+# provider 故障切换事实与恢复操作（provider-fault-failover）：outbox 行源绑定 由 ``FailoverLedger.make_source_validator`` 校验，不入 operator_incident。
+SOURCE_KIND_FAILOVER_EPISODE = "failover-episode"
+SOURCE_KIND_FAILOVER_OPERATION = "failover-operation"
+SOURCE_KINDS = frozenset({
+    SOURCE_KIND_RESPONSIBILITY, SOURCE_KIND_TASK, SOURCE_KIND_INCIDENT,
+    SOURCE_KIND_FAILOVER_EPISODE, SOURCE_KIND_FAILOVER_OPERATION,
+})
 SOURCE_BINDING_KEYS = ("source_kind", "source_id", "source_condition_key",
                        "source_version", "source_state",
                        "source_incident_type", "source_project",
@@ -538,6 +543,58 @@ class EmailOutbox:
                 _store(self._conn, rec)
             return {"created": False, "changed": changed,
                     "reason": "duplicate-observation", "item": _snapshot(rec)}
+
+    def coalesce_unclaimed(self, item_id: str, *, expected_revision: int,
+                           fields: dict, now: int,
+                           source_binding: dict) -> dict:
+        """原子更新尚未认领的首封；与 claim 竞争时只有一方能提交（N10）。"""
+        binding = _validate_source_binding(source_binding, item_id)
+        if not isinstance(fields, dict) or binding is None:
+            return {"coalesced": False, "reason": "invalid-fields"}
+        with transaction(self._conn):
+            self._ensure_schema()
+            rec = _load(self._conn, item_id)
+            if rec is None:
+                return {"coalesced": False, "reason": "missing-item"}
+            if int(rec.get("revision", -1)) != int(expected_revision):
+                return {"coalesced": False, "reason": "stale-revision",
+                        "item": _snapshot(rec)}
+            if (rec.get("kind") != "first"
+                    or rec.get("status") not in (STATUS_PENDING_AUTH, STATUS_PENDING)
+                    or rec.get("possible_submitted_at") is not None
+                    or rec.get("attempts", 0) != 0
+                    or rec.get("claim_owner") is not None):
+                return {"coalesced": False, "reason": "already-claimed-or-submitted",
+                        "item": _snapshot(rec)}
+            rec.update({key: value for key, value in fields.items()
+                        if key in {
+                            "condition_version", "escalation_level", "recipient_ref",
+                            "sender_ref", "recipient_fingerprint", "sender_fingerprint",
+                            "subject", "body", "content_hash", "status",
+                            "first_seen_at", "last_observed_at", "summary",
+                            "max_attempts", "receipt_limit", "deadline_at",
+                            "next_attempt_at", "metadata"}})
+            rec.update({
+                "source_kind": binding["source_kind"],
+                "source_id": binding["source_id"],
+                "source_condition_key": binding["source_condition_key"],
+                "source_version": binding["source_version"],
+                "source_state": binding["source_state"],
+                "source_incident_type": binding["source_incident_type"],
+                "source_project": binding["source_project"],
+                "source_task_id": binding["source_task_id"],
+                "source_session": binding["source_session"],
+                "source_model": binding["source_model"],
+                "revision": int(rec["revision"]) + 1,
+                "updated_at": max(int(rec["updated_at"]), int(now)),
+            })
+            ok, reason, _state = self._recheck_ok(rec)
+            if not ok:
+                return {"coalesced": False, "reason": "source-recheck-failed",
+                        "recheck_reason": reason,
+                        "item": _snapshot(rec)}
+            _store(self._conn, rec)
+        return {"coalesced": True, "item": _snapshot(rec)}
 
     # ---- 读取 ----------------------------------------------------------
     def get_item(self, item_id: str) -> dict | None:

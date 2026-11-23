@@ -356,9 +356,11 @@ def connect(home: str) -> sqlite3.Connection:
     # schema3写入者。先验证契约再执行可能改journal状态的PRAGMA；默认不安装。
     from .writer_guard import configure_writer_connection
     from .delivery_guard import configure_delivery_connection
+    from .failover_guard import configure_failover_connection
     try:
         configure_writer_connection(conn)
         configure_delivery_connection(conn)
+        configure_failover_connection(conn)
     except BaseException:
         conn.close()
         raise

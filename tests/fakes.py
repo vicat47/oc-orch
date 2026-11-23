@@ -102,6 +102,7 @@ class FakeClient:
         self.active: dict[str, dict] = {}
         self.prompt_calls: list[dict] = []
         self.create_calls: list[dict] = []
+        self.switch_calls: list[dict] = []
         self.interrupt_calls: list[dict] = []
         self._failures: dict[str, list[Exception]] = {}
         self.info_payload: dict = {"version": "0.0.0-test"}
@@ -462,8 +463,30 @@ class FakeClient:
             self.scheduled_sessions.add(session_id)
         return {"data": {"id": message_id}}
 
+    def session_model(self, session_id: str) -> dict | None:
+        session = self.sessions.get(session_id)
+        if not isinstance(session, dict):
+            return None
+        model = session.get("model")
+        return model if isinstance(model, dict) else None
+
+    def switch_model(self, session_id: str, *, provider: str, model: str,
+                     variant: str | None = None) -> dict:
+        self.switch_calls.append({
+            "session_id": session_id, "providerID": provider,
+            "id": model, "variant": variant,
+        })
+        self._maybe_fail("switch_model")
+        if session_id not in self.sessions:
+            raise ApiError(404, "/api/session/" + session_id + "/model",
+                           "SessionNotFoundError", "session not found", "")
+        ref = {"providerID": provider, "id": model}
+        if variant:
+            ref["variant"] = variant
+        self.sessions[session_id]["model"] = ref
+        return {"status": 204, "accepted": True}
+
     def interrupt(self, session_id: str, resume: bool = False) -> dict:
-        self._maybe_fail("interrupt")
         self.interrupt_calls.append({"session_id": session_id, "resume": resume})
         return {"data": {}}
 

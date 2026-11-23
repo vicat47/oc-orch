@@ -32,6 +32,8 @@ from ..composition import (
 from ..domain.errors import (
     ActionError,
     ApiError,
+    FailoverGuardError,
+    FailoverStateError,
     LedgerError,
     OrchError,
     TransportError,
@@ -943,6 +945,105 @@ def cmd_delivery_policy(args) -> int:
                 "仅影响后续安全决策；不抢占在途、不清暂停/冷却；模式不是费用授权。")
         emit(args, out, text)
         return 0
+    finally:
+        ctx.conn.close()
+
+
+def cmd_failover(args) -> int:
+    """Provider failover status/policy and explicitly confirmed operations."""
+    from ..composition import make_failover_control, make_failover_snapshot
+
+    ctx = Ctx(args)
+    try:
+        action = args.failover_action
+        if action == "status":
+            out = make_failover_snapshot(
+                ctx.conn, project=args.project, task_id=args.task)
+            if out.get("ok") is not True:
+                return fail(args, out.get("code", "FAILOVER_STATE_UNKNOWN"),
+                            "failover 状态未知；自动恢复保持关闭", out)
+            emit(args, out,
+                 f"episodes={len(out['episodes'])} operations={len(out['operations'])} "
+                 f"route_blocks={len(out['route_blocks'])} locks={len(out['session_locks'])} "
+                 f"guard_valid={out['guard'].get('valid')} notifications="
+                 f"{out['notification_counts']}")
+            return 0
+        control = make_failover_control(ctx.conn, ctx.ledger, clock=SystemClock())
+        if action == "contract":
+            if args.contract_action == "status":
+                out = control.contract_status()
+            else:
+                expected = "INSTALL provider-failover-v1"
+                if args.confirm != expected:
+                    return fail(args, "usage", f"安装需逐字确认：{expected}")
+                out = control.install_contract(actor="operator:cli")
+            emit(args, out)
+            return 0
+        if action == "policy":
+            if args.policy_action == "show":
+                scope = "task" if args.task else "project"
+                target = args.task or args.project
+                out = control.show_policy(
+                    scope, target, project_default=args.project_default)
+                emit(args, out)
+                return 0
+            scope = args.scope
+            target = args.task if scope == "task" else args.project
+            if args.confirm != target:
+                return fail(args, "usage", f"策略变更需逐字确认目标：{target}")
+            try:
+                policy = json.loads(args.policy_json)
+            except (TypeError, ValueError):
+                return fail(args, "usage", "--policy 必须是合法 JSON 对象")
+            if not isinstance(policy, dict):
+                return fail(args, "usage", "--policy 必须是 JSON 对象")
+            expected_revision = (None if args.expected_revision == 0
+                                 else args.expected_revision)
+            out = control.set_policy(
+                scope, target, policy, expected_revision=expected_revision,
+                operation_id=args.operation_id, reason=args.reason,
+                actor="operator:cli")
+            emit(args, out,
+                 f"{scope} {target} failover policy revision={out['revision']} "
+                 f"enabled={out['policy'].get('enabled')}")
+            return 0
+        if action == "tick":
+            expected = f"RUN {args.episode}"
+            if args.confirm != expected:
+                return fail(args, "usage", f"恢复调谐可能切换模型并派单，需逐字确认：{expected}")
+            from ..composition import make_fault_recovery
+
+            recovery = make_fault_recovery(ctx.conn, ctx.home,
+                                           client=ctx.client_or_die)
+            out = recovery.tick(project=args.project, limit=1,
+                                episode_id=args.episode)
+            if out.get("scanned") != 1:
+                return fail(args, "usage", "指定故障链不存在、非活动或不可读取", out)
+            emit(args, out, f"fault recovery tick {args.episode}: {out}")
+            return 0
+        if action == "release":
+            expected = f"RELEASE {args.session} {args.operation}"
+            if args.confirm != expected:
+                return fail(args, "usage", f"解除恢复占用需逐字确认：{expected}")
+            out = control.release_session(
+                args.session, operation_id=args.operation,
+                actor="operator:cli", reason=args.reason)
+            emit(args, out)
+            return 0
+        if action == "route-clear":
+            expected = f"CLEAR {args.route}"
+            if args.confirm != expected:
+                return fail(args, "usage", f"解除路线阻断需逐字确认：{expected}")
+            out = control.clear_route(args.route, reason=args.reason)
+            emit(args, out)
+            return 0
+        return fail(args, "usage", "failover action 未实现")
+    except (FailoverStateError, FailoverGuardError, ValueError) as exc:
+        return fail(args, "usage", str(exc))
+    except LedgerError as exc:
+        return fail(args, exc.code, str(exc))
+    except Exception:
+        raise
     finally:
         ctx.conn.close()
 
@@ -2210,6 +2311,60 @@ def build_parser() -> argparse.ArgumentParser:
         c.add_argument("--reason", required=True)
         c.add_argument("--confirm", required=True, help="逐字回填目标身份")
         c.set_defaults(func=cmd_delivery_policy)
+
+    s = sub.add_parser("failover", help="provider 故障恢复（只读状态与显式确认操作）")
+    fsub = s.add_subparsers(dest="failover_action", required=True)
+    c = fsub.add_parser("status", help="本地只读状态；不连接 OpenCode、不推进游标")
+    c.add_argument("--project")
+    c.add_argument("--task")
+    c.set_defaults(func=cmd_failover)
+    c = fsub.add_parser("contract", help="failover 独立写契约状态/显式安装")
+    csub = c.add_subparsers(dest="contract_action", required=True)
+    csub.add_parser("status", help="只读检查 failover 写契约").set_defaults(
+        func=cmd_failover, failover_action="contract")
+    install = csub.add_parser("install", help="显式安装，需停写/一致副本窗口")
+    install.add_argument("--confirm", required=True,
+                         help="逐字输入 INSTALL provider-failover-v1")
+    install.set_defaults(func=cmd_failover, failover_action="contract")
+    c = fsub.add_parser("policy", help="failover 策略查看/版本化更新")
+    psub = c.add_subparsers(dest="policy_action", required=True)
+    show = psub.add_parser("show")
+    group = show.add_mutually_exclusive_group(required=True)
+    group.add_argument("--project")
+    group.add_argument("--task")
+    show.add_argument("--project-default", help="任务查看时指定所属项目")
+    show.set_defaults(func=cmd_failover, failover_action="policy")
+    for name, scope in (("set-project", "project"), ("set-task", "task")):
+        update = psub.add_parser(name)
+        update.add_argument("--" + scope, required=True)
+        update.add_argument("--policy-json", required=True,
+                            help="完整 JSON 对象，含 enabled/source_routes/fallback_routes/budgets")
+        update.add_argument("--expected-revision", type=int, required=True,
+                            help="0 表示仅当记录不存在时创建")
+        update.add_argument("--operation-id", required=True)
+        update.add_argument("--reason", required=True)
+        update.add_argument("--confirm", required=True,
+                            help="逐字回填 project/task 身份")
+        update.set_defaults(func=cmd_failover, failover_action="policy",
+                            policy_action="set", scope=scope)
+    c = fsub.add_parser("tick", help="推进指定故障链一步；可能调用切换/派单网络接口")
+    c.add_argument("--episode", required=True)
+    c.add_argument("--project")
+    c.add_argument("--confirm", required=True, help="逐字输入 RUN <episode-id>")
+    c.set_defaults(func=cmd_failover)
+    c = fsub.add_parser("release", help="人工关闭故障链并解除 session 恢复占用")
+    c.add_argument("--session", required=True)
+    c.add_argument("--operation", required=True)
+    c.add_argument("--reason", required=True)
+    c.add_argument("--confirm", required=True,
+                    help="逐字输入 RELEASE <session-id> <operation-id>")
+    c.set_defaults(func=cmd_failover)
+    c = fsub.add_parser("route-clear", help="显式解除原 provider 硬故障阻断")
+    c.add_argument("--route", required=True)
+    c.add_argument("--reason", required=True)
+    c.add_argument("--confirm", required=True,
+                    help="逐字输入 CLEAR <provider/model[#variant]>")
+    c.set_defaults(func=cmd_failover)
 
     s = sub.add_parser("delivery-metrics", help="固定cohort/窗口事实导出的纯度量（不连服务/不写台账）")
     s.add_argument("--cohort", required=True)

@@ -8,6 +8,20 @@ class LedgerError(Exception):
         super().__init__(f"{code}: {message}")
 
 
+class FailoverStateError(LedgerError):
+    """故障切换台账无法安全读取或更新；调用方必须 fail closed。"""
+
+    def __init__(self, message: str):
+        super().__init__("FAILOVER_STATE_UNKNOWN", message)
+
+
+class FailoverGuardError(LedgerError):
+    """故障切换写契约缺失、损坏或恢复占用冲突。"""
+
+    def __init__(self, message: str):
+        super().__init__("FAILOVER_GUARD_INVALID", message)
+
+
 class OrchError(Exception):
     code = "ORCH_ERROR"
 
