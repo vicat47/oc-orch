@@ -230,6 +230,37 @@ def make_responsibilities(ledger):
     return ResponsibilityStore(ledger)
 
 
+def make_fault_recovery(conn, home, *, client, clock=None):
+    """提供商故障恢复用例：FailoverLedger + 资源授权 + 共享派单的编排装配。
+
+    - ``failover``：meta 命名空间持久层（episode/operation/策略/路线阻断）。
+    - ``dispatch``：复用共享 Orchestration.dispatch 做切换确认后的后继 Attempt。
+    - ``authorize``：包装独立资源授权；拒绝/未配置一律保守 `allowed=False`
+      （F08：工作模式与价格目录不产生授权，无授权不自动切换）。
+    """
+    from .adapters.failover_ledger import FailoverLedger
+    from .application.fault_recovery import FaultRecoveryService
+
+    actual_clock = clock or SystemClock()
+    ledger = Ledger(conn, home, clock=actual_clock)
+    failover = FailoverLedger(conn, clock=actual_clock.now_ms,
+                              audit=ledger.audit)
+    orch = application(ledger, client, load_config(home), clock=actual_clock)
+    resource = make_resource_authorization(ledger, actual_clock)
+
+    def authorize(**kw):
+        try:
+            out = resource.authorize(scope=kw["scope"], scope_id=kw["scope_id"],
+                                     model=kw["model"], preset=kw["preset"])
+            return {"allowed": bool(out.get("allowed"))}
+        except Exception:
+            return {"allowed": False}
+
+    return FaultRecoveryService(
+        ledger=ledger, failover=failover, client=client(), clock=actual_clock,
+        dispatch=orch.dispatch, authorize=authorize)
+
+
 def make_managed_inputs(conn, home, *, client, clock=None, responsibilities=None):
     """显式输入用例；惰性客户端确保 record/列表/空白名单不访问服务。
 

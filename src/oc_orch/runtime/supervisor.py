@@ -322,6 +322,41 @@ class Supervisor:
         self._responsibilities_store = None
         self._dependency_wait = None
         self._operator_incident = None
+        self._fault_recovery = None
+
+    # ---- 惰性装配：提供商故障恢复（同一连接/时钟；构造不访问网络） ----
+    def _fault_recovery_service(self):
+        if self._fault_recovery is None:
+            from ..composition import make_fault_recovery
+
+            self._fault_recovery = make_fault_recovery(
+                self.conn, self.home, client=lambda: self.client, clock=self.clock)
+        return self._fault_recovery
+
+    def observe_fault_failure(self, *, task: dict, att: dict,
+                              terminal_error: dict | None) -> dict:
+        """把一次已确认失败的执行回合登记为故障（provider 硬故障自动恢复队列）。"""
+        if not terminal_error or not isinstance(terminal_error, dict):
+            return {"action": "no-error"}
+        try:
+            return self._fault_recovery_service().observe_failure(
+                error=terminal_error, task_id=task["id"], attempt_id=att["id"],
+                session_id=att.get("session_id"),
+                origin_at=att.get("terminal_at") or self.clock.now_ms())
+        except Exception as exc:
+            self.ledger.audit("supervisor", "fault.observe-error", "attempt",
+                              att["id"], {"error": redact(repr(exc), 400)})
+            return {"action": "error", "error": type(exc).__name__}
+
+    def tick_fault_recovery(self, *, now: int) -> dict:
+        """每轮有界推进故障恢复（无 episode 时零网络）。"""
+        try:
+            return self._fault_recovery_service().tick(limit=10, now=now)
+        except Exception as exc:
+            self.ledger.audit("supervisor", "fault.tick-error", "cycle",
+                              str(self.last_cycle_at),
+                              {"error": redact(repr(exc), 400)})
+            return {"error": type(exc).__name__}
 
     # ---- 单实例 ---------------------------------------------------
     def acquire_lock(self) -> None:
@@ -618,6 +653,12 @@ class Supervisor:
         except Exception as e:
             self.last_error = repr(e)
             self.ledger.audit("supervisor", "incident.tick-error", "cycle",
+                              str(self.last_cycle_at), {"error": redact(repr(e), 800)})
+        try:
+            out["fault_recovery"] = self.tick_fault_recovery(now=now)
+        except Exception as e:
+            self.last_error = repr(e)
+            self.ledger.audit("supervisor", "fault.tick-error", "cycle",
                               str(self.last_cycle_at), {"error": redact(repr(e), 800)})
         return out
 
@@ -2870,6 +2911,8 @@ class Supervisor:
                 },
                 priority=8,
             )
+            # 提供商硬故障/预算耗尽：登记故障恢复队列（自动切换须另行授权）。
+            self.observe_fault_failure(task=task, att=att, terminal_error=terminal_error)
         else:
             self.enqueue_task(
                 task, "execution_interrupted",
