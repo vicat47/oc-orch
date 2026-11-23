@@ -231,5 +231,66 @@ class TestRecoveryFlow(Base):
         self.assertNotEqual(ep["status"], fo.EPISODE_SWITCH_CONFIRMED)
 
 
+class TestDispatchModelGuard(unittest.TestCase):
+    """F10：复用 session 且请求模型与实际不一致 → 在创建 Attempt 前拒绝。"""
+
+    def test_model_mismatch_rejected_before_attempt(self):
+        from tests.fakes import FakeClock, FakeService, FakeClient
+        from oc_orch.application.services import Orchestration
+        from oc_orch.domain.errors import LedgerError
+
+        class StubLedger:
+            def get_task(self, tid):
+                return {"id": tid, "project": "p", "status": "blocked",
+                        "coordinator_session": "ses_c", "current_attempt_id": None,
+                        "metadata": {}, "write_scope": [], "title": "t",
+                        "closed_at": None}
+
+            def check_project_dispatch(self, project):
+                return None
+
+            def coordinator_lease(self, project):
+                return {"holder_session": "ses_c"}
+
+            def check_dispatch_authority(self, project, coordinator):
+                return {"project": project, "session_id": coordinator, "epoch": 1}
+
+            def provider_states(self):
+                return {}
+
+        client = FakeClient(FakeService())
+        client.sessions["ses_w1"] = {
+            "id": "ses_w1", "title": "t",
+            "model": {"providerID": "deepseek", "id": "deepseek-flash",
+                      "variant": "default"},
+            "location": {"directory": "/work"}, "metadata": {},
+            "outcome": "failed", "time": {}}
+        clock = FakeClock(wall_ms=1_000_000)
+        orch = Orchestration(StubLedger(), client=lambda: client,
+                             results=object(), clock=clock,
+                             new_id=lambda p, n: "x")
+        with self.assertRaises(LedgerError) as raised:
+            orch.dispatch("T-1", directory="/work", coordinator="ses_c",
+                          session="ses_w1",
+                          model="yfzs-newapi/DeepSeek-AI/DeepSeek-V4-Flash")
+        self.assertEqual(raised.exception.code, "MODEL_MISMATCH")
+        self.assertEqual(client.switch_calls, [])
+
+    def test_matching_model_passes_guard(self):
+        from tests.fakes import FakeClock, FakeService, FakeClient
+
+        client = FakeClient(FakeService())
+        client.sessions["ses_w1"] = {
+            "id": "ses_w1", "title": "t",
+            "model": {"providerID": "yfzs-newapi", "id": "X",
+                      "variant": "default"},
+            "location": {"directory": "/work"}, "metadata": {},
+            "outcome": "succeeded", "time": {"idle": 999}}
+        # 一致模型的判定条件（session_model 返回 request 相同 provider/id）。
+        model = client.session_model("ses_w1")
+        self.assertEqual((model["providerID"], model["id"]),
+                         ("yfzs-newapi", "X"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -200,6 +200,18 @@ class Orchestration:
             existing_session = self._client().get_session(session)
             if existing_session is None:
                 raise ActionError("usage", f"session 不存在：{session}")
+            if model and model_spec:
+                # F10：复用 session 时请求模型必须与实际模型一致；不一致在
+                # 创建新 Attempt/prompt 之前拒绝（防止台账写目标模型而实际仍在
+                # 旧模型执行——provider-fault-failover 的假切换回归防线）。
+                live = existing_session.get("model") or {}
+                if (live.get("providerID"), live.get("id")) != (
+                        model_spec.get("providerID"), model_spec.get("id")):
+                    raise LedgerError(
+                        "MODEL_MISMATCH",
+                        f"复用 session {session} 实际模型为 "
+                        f"{live.get('providerID')}/{live.get('id')}，"
+                        f"与请求模型 {model} 不一致；请先显式切换或新建 session")
             directory = (existing_session.get("location") or {}).get("directory") or directory
         scope = list(scope or task.get("write_scope") or [directory])
         declared = (task.get("metadata") or {}).get("deliverables") or []
