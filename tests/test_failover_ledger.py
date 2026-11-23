@@ -16,6 +16,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from oc_orch.adapters.sqlite_db import connect, init
+from oc_orch.adapters.writer_guard import install_writer_guard
+from oc_orch.adapters.failover_guard import install_failover_guard
 from oc_orch.adapters.failover_ledger import (
     FailoverLedger,
     FailoverStateError,
@@ -41,6 +43,8 @@ class Base(unittest.TestCase):
         self._tmp = tempfile.mkdtemp(prefix="oc-orch-failover-")
         self.home = self._tmp
         conn = init(self.home)
+        install_writer_guard(conn, actor="test")
+        install_failover_guard(conn, actor="test")
         conn.close()
         self.audit_rows = []
 
@@ -114,6 +118,12 @@ class TestEpisodeCAS(Base):
                                     check_same_thread=False)
             conn.row_factory = _sqlite3.Row
             conn.execute("PRAGMA busy_timeout=15000")
+            from oc_orch.adapters.writer_guard import configure_writer_connection
+            from oc_orch.adapters.delivery_guard import configure_delivery_connection
+            from oc_orch.adapters.failover_guard import configure_failover_connection
+            configure_writer_connection(conn)
+            configure_delivery_connection(conn)
+            configure_failover_connection(conn)
             return conn
 
         c1, c2 = raw_conn(), raw_conn()
@@ -233,7 +243,7 @@ class TestRouteBlock(Base):
             self.assertTrue(before["blocked"])
             after = s.is_route_blocked(route, now=3000)
             # F24：时间流逝不等于解除，仍返回记录并标记 expired
-            self.assertFalse(after["blocked"])
+            self.assertTrue(after["blocked"])
             self.assertTrue(after["expired"])
         finally:
             conn.close()

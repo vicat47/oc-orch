@@ -23,9 +23,12 @@ from typing import Any
 
 from ..domain.failover import (
     EPISODE_BLOCKED_MANUAL,
+    EPISODE_CANCELLED,
+    EPISODE_CONTINUATION_REQUESTED,
     EPISODE_CONTINUATION_UNKNOWN,
     EPISODE_OPEN,
     EPISODE_RESUMED,
+    EPISODE_SUPERSEDED,
     EPISODE_SWITCH_CONFIRMED,
     EPISODE_SWITCH_REQUESTED,
     EPISODE_SWITCH_UNKNOWN,
@@ -47,7 +50,8 @@ _FAULT_STATES = frozenset({EPISODE_BLOCKED_MANUAL})
 _FAILOVER_STATES = frozenset({
     EPISODE_OPEN, EPISODE_WAITING_QUIESCENCE, EPISODE_SWITCH_REQUESTED,
     EPISODE_SWITCH_CONFIRMED, EPISODE_SWITCH_UNKNOWN,
-    EPISODE_CONTINUATION_UNKNOWN, EPISODE_RESUMED,
+    EPISODE_CONTINUATION_REQUESTED, EPISODE_CONTINUATION_UNKNOWN,
+    EPISODE_RESUMED, EPISODE_SUPERSEDED, EPISODE_CANCELLED,
 })
 
 
@@ -100,6 +104,7 @@ def decide(*, version: int, rows: list[dict], resolved: bool = False,
     if not isinstance(rows, list):
         rows = []
     reminders = [r for r in rows if r.get("kind") in (KIND_FIRST, KIND_UPDATE)]
+    updates = [r for r in rows if r.get("kind") == KIND_UPDATE]
     prior_possible = bool(reminders)
     if not reminders:
         return {"event": KIND_FIRST, "reason": "first-notify",
@@ -115,7 +120,10 @@ def decide(*, version: int, rows: list[dict], resolved: bool = False,
     if int(version) <= newest:
         return {"event": None, "reason": "duplicate-observation",
                 "prior_possible": prior_possible}
-    if len(reminders) >= int(max_updates):
+    # max_updates applies to updates after the first notice, not to the first
+    # notice itself. Otherwise the default of three would silently allow only
+    # two substantive updates per incident.
+    if len(updates) >= int(max_updates):
         return {"event": None, "reason": "update-budget-exhausted",
                 "prior_possible": prior_possible}
     return {"event": KIND_UPDATE, "reason": "condition-version",

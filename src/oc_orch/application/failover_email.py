@@ -96,12 +96,20 @@ class FailoverEmailService:
             self.email, "_outbox") else []
         version = int(episode.get("revision") or 1)
         resolved = episode.get("status") == fo.EPISODE_RESUMED
-        decision = notify.decide(version=version, rows=rows, resolved=resolved)
-        kind = decision.get("event")
+        merge = next((row for row in reversed(rows)
+                      if row.get("kind") == notify.KIND_FIRST
+                      and row.get("status") in (STATUS_PENDING_AUTH, STATUS_PENDING)
+                      and int(row.get("condition_version") or 0) < version
+                      and row.get("possible_submitted_at") is None
+                      and row.get("attempts", 0) == 0
+                      and row.get("claim_owner") is None), None)
+        decision = (None if merge else notify.decide(
+            version=version, rows=rows, resolved=resolved))
+        kind = notify.KIND_FIRST if merge else decision.get("event")
         if kind is None:
             return {"result": "no-new-event", "reason": decision.get("reason"),
                     "base_key": bk}
-        ek = notify.event_key(
+        ek = merge["item_id"] if merge else notify.event_key(
             episode_id=str(episode.get("episode_id") or ""),
             incident_type=incident_type, recipient_ref=recipient_ref,
             version=version, kind=kind)
@@ -122,6 +130,46 @@ class FailoverEmailService:
                          recipient_ref=recipient_ref)
         status = STATUS_PENDING if auth.get("allowed") else STATUS_PENDING_AUTH
         binding = self._binding(episode, incident_type, version)
+        summary = {
+            "episode_id": episode.get("episode_id"),
+            "status": episode.get("status"),
+            "condition_key": f"failover:{episode.get('episode_id')}",
+            "version": version,
+            "delivery_block_reason": auth.get("reason")
+            if not auth.get("allowed") else None,
+        }
+        if merge:
+            outbox = getattr(self.email, "_outbox", None)
+            coalesced = outbox.coalesce_unclaimed(
+                ek, expected_revision=int(merge["revision"]), now=now,
+                source_binding=binding, fields={
+                    "condition_version": version, "escalation_level": 0,
+                    "recipient_ref": recipient_ref,
+                    "sender_ref": _sender_ref(self._policy),
+                    "recipient_fingerprint": _fingerprint_of(
+                        self._policy, "recipient", recipient_ref),
+                    "sender_fingerprint": _sender_fingerprint(self._policy),
+                    "subject": content["subject"], "body": content["body"],
+                    "content_hash": content["content_hash"], "status": status,
+                    "last_observed_at": now, "summary": summary,
+                    "max_attempts": int(getattr(
+                        self._policy, "max_attempts", None) or 3),
+                    "receipt_limit": int(getattr(
+                        self._policy, "receipt_check_limit", None) or 3),
+                    "next_attempt_at": now,
+                })
+            if coalesced.get("coalesced"):
+                return {"result": "enqueued", "kind": notify.KIND_FIRST,
+                        "item_id": ek, "created": False, "coalesced": True,
+                        "base_key": bk, "incident_type": incident_type}
+            if coalesced.get("reason") in (
+                    "stale-revision", "already-claimed-or-submitted",
+                    "missing-item"):
+                # claim 已抢先或版本变化；重新读取后只追加有界状态更新。
+                return self.enqueue_episode_event(episode, now=now)
+            return {"result": "source-recheck-failed",
+                    "reason": coalesced.get("recheck_reason")
+                    or coalesced.get("reason"), "item_id": ek}
         out = self._upsert(
             item_id=ek, base_key=bk, event_key=ek, project=project,
             incident_id=str(episode.get("episode_id") or ""),
@@ -134,12 +182,7 @@ class FailoverEmailService:
             subject=content["subject"], body=content["body"],
             content_hash=content["content_hash"], status=status,
             first_seen_at=episode.get("created_at") or now,
-            observed_at=now, summary={
-                "episode_id": episode.get("episode_id"),
-                "status": episode.get("status"),
-                "condition_key": f"failover:{episode.get('episode_id')}",
-                "version": version,
-            },
+            observed_at=now, summary=summary,
             max_attempts=int(getattr(self._policy, "max_attempts", None) or 3),
             receipt_limit=int(getattr(self._policy, "receipt_check_limit", None)
                               or 3),

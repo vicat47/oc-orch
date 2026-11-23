@@ -306,6 +306,13 @@ def classify_provider_error(error: dict | None) -> dict:
     msg = str(error.get("message") or "")
     codes, messages, retry_after_ms = _collect_error_features(error)
 
+    def classified(category: str, transient: bool, status_: int | None,
+                   message: str, action: str) -> dict:
+        result = _base_result(category, transient, status_, message, action)
+        if retry_after_ms is not None:
+            result["retry_after_ms"] = retry_after_ms
+        return result
+
     hay = " ".join(messages)
     body = error.get("response")
     if isinstance(body, dict):
@@ -319,47 +326,44 @@ def classify_provider_error(error: dict | None) -> dict:
     # 1) 订阅限额：结构化 code/tag 或明确消息，普通 429 之前识别。
     sub_code = next((c for c in _SUBSCRIPTION_LIMIT_CODES if c in codes), None)
     if sub_code is not None or any(_SUBSCRIPTION_LIMIT_PHRASE in m for m in messages):
-        result = _base_result("quota", False, status, msg[:500],
-                              "block-and-alert")
+        result = classified("quota", False, status, msg[:500],
+                            "block-and-alert")
         result["limit_kind"] = "subscription"
         if sub_code is not None:
             result["code"] = sub_code
-        if retry_after_ms is not None:
-            result["retry_after_ms"] = retry_after_ms
         return result
 
     # 2) 结构化 code/tag 路由（先于 status 文本回退，避免被状态掩盖）。
     if codes & _AUTH_CODES:
-        return _base_result("auth", False, status, msg[:500], "block-and-alert")
+        return classified("auth", False, status, msg[:500], "block-and-alert")
     if codes & _MODEL_UNAVAILABLE_CODES:
-        return _base_result("model_unavailable", False, status, msg[:500],
-                            "block-and-alert")
+        return classified("model_unavailable", False, status, msg[:500],
+                          "block-and-alert")
     if codes & _QUOTA_CODES:
-        return _base_result("quota", False, status, msg[:500], "block-and-alert")
+        return classified("quota", False, status, msg[:500], "block-and-alert")
     if codes & _RATE_LIMIT_CODES:
-        return _base_result("rate_limit", True, status, msg[:500],
-                            "backoff-and-observe")
+        return classified("rate_limit", True, status, msg[:500],
+                          "backoff-and-observe")
 
     # 3) status 与消息关键词回退（与原分类顺序一致，含 permission_denied/模型权限）。
     if (status in (401, 403) or "unauthorized" in hay or "invalid api key" in hay
             or "permission_denied" in hay or "model_permission" in hay):
-        return _base_result("auth", False, status, msg[:500], "block-and-alert")
+        return classified("auth", False, status, msg[:500], "block-and-alert")
     if status == 429 or "rate limit" in hay or "too many requests" in hay:
-        return _base_result("rate_limit", True, status, msg[:500],
-                            "backoff-and-observe")
+        return classified("rate_limit", True, status, msg[:500],
+                          "backoff-and-observe")
     if "quota" in hay or "insufficient" in hay or "balance" in hay:
-        return _base_result("quota", False, status, msg[:500], "block-and-alert")
+        return classified("quota", False, status, msg[:500], "block-and-alert")
     if ("model_not_found" in hay or "no available channel" in hay
             or "not found" in hay):
-        return _base_result("model_unavailable", False, status, msg[:500],
-                            "block-and-alert")
+        return classified("model_unavailable", False, status, msg[:500],
+                          "block-and-alert")
     if status and 500 <= status < 600:
-        return _base_result("server", True, status, msg[:500],
-                            "observe-provider-retry")
+        return classified("server", True, status, msg[:500],
+                          "observe-provider-retry")
     if status and 400 <= status < 500:
-        return _base_result("request", False, status, msg[:500],
-                            "block-and-alert")
-    return _base_result("unknown", True, status, msg[:500], "observe")
+        return classified("request", False, status, msg[:500], "block-and-alert")
+    return classified("unknown", True, status, msg[:500], "observe")
 
 
 def classify_http_error(status: int | None, tag: str | None = None,

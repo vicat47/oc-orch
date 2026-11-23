@@ -44,6 +44,7 @@ from ..composition import (
     make_registered_turn_observer,
     make_dependency_wait,
     make_wake_admission,
+    make_configured_failover_email,
 )
 from ..domain.classify import (
     classify_event,
@@ -339,11 +340,22 @@ class Supervisor:
         """把一次已确认失败的执行回合登记为故障（provider 硬故障自动恢复队列）。"""
         if not terminal_error or not isinstance(terminal_error, dict):
             return {"action": "no-error"}
+        retry = (att.get("metadata") or {}).get("provider_retry") or {}
+        count = int(retry.get("count") or 0)
+        first_at = int(retry.get("first_at") or att.get("started_at") or 0)
+        threshold = int(self.cfg.get("provider_retry_alert_threshold") or 5)
+        elapsed_limit = int(self.cfg.get("provider_retry_alert_after") or 600) * 1000
+        transient_budget_exhausted = bool(count and (
+            count >= threshold or first_at and self.clock.now_ms() - first_at >= elapsed_limit))
         try:
             return self._fault_recovery_service().observe_failure(
                 error=terminal_error, task_id=task["id"], attempt_id=att["id"],
                 session_id=att.get("session_id"),
-                origin_at=att.get("terminal_at") or self.clock.now_ms())
+                origin_at=att.get("terminal_at") or self.clock.now_ms(),
+                event_id=(att.get("metadata") or {}).get("execution", {})
+                         .get("terminal", {}).get("event_id"),
+                message_id=att.get("dispatch_msg_id"),
+                transients_exhausted=transient_budget_exhausted)
         except Exception as exc:
             self.ledger.audit("supervisor", "fault.observe-error", "attempt",
                               att["id"], {"error": redact(repr(exc), 400)})
@@ -363,25 +375,25 @@ class Supervisor:
     def _failover_email_service(self):
         if self._failover_email is None:
             try:
-                from ..adapters.email_config import load_email_runtime
-                runtime = load_email_runtime(self.home)
-                if not runtime.enabled:
-                    self._failover_email = False  # 未启用：显式不配置
-                    return None
-                from ..composition import make_failover_email
-                from ..adapters.agently_mail import AgentlyMailTransport
-
-                self._failover_email = make_failover_email(
-                    self.conn, clock=self.clock,
-                    policy=runtime.policy,
-                    transport=AgentlyMailTransport(
-                        sender_binding=runtime.sender_binding))
+                self._failover_email = make_configured_failover_email(
+                    self.conn, self.home, clock=self.clock)
+                if self._failover_email is None:
+                    # 默认策略只登记 pending-auth，不发送、不访问邮件通道。
+                    from ..composition import make_failover_email
+                    from ..domain.operator_email import EmailPolicy
+                    self._failover_email = make_failover_email(
+                        self.conn, clock=self.clock, policy=EmailPolicy())
             except Exception as exc:
                 self.ledger.audit("supervisor", "failover-email.assemble-error",
                                   "cycle", str(self.last_cycle_at),
                                   {"error": redact(repr(exc), 300)})
-                self._failover_email = False
-                return None
+                try:
+                    from ..composition import make_failover_email
+                    from ..domain.operator_email import EmailPolicy
+                    self._failover_email = make_failover_email(
+                        self.conn, clock=self.clock, policy=EmailPolicy())
+                except Exception:
+                    self._failover_email = False
         return self._failover_email if self._failover_email else None
 
     def bridge_failover_events(self, *, now: int) -> dict:
@@ -396,8 +408,10 @@ class Supervisor:
         if svc is None:
             return {"skipped": "failover-email-not-configured"}
         try:
-            listed = self._fault_recovery_service().failover.list_records(
-                "episode", limit=20)
+            failover = self._fault_recovery_service().failover
+            listed = failover.list_records(
+                "episode", limit=200,
+                after_id=failover.get_cursor("email-bridge"))
         except Exception as exc:
             self.ledger.audit("supervisor", "failover-email.bridge-error",
                               "cycle", str(self.last_cycle_at),
@@ -407,7 +421,9 @@ class Supervisor:
         scanned = 0
         for rec in listed["records"]:
             if rec.get("status") not in (
-                    fo.ACTIVE_EPISODE_STATES | {fo.EPISODE_BLOCKED_MANUAL}):
+                    fo.ACTIVE_EPISODE_STATES | {
+                        fo.EPISODE_BLOCKED_MANUAL, fo.EPISODE_RESUMED,
+                        fo.EPISODE_SUPERSEDED, fo.EPISODE_CANCELLED}):
                 continue
             scanned += 1
             try:
@@ -418,8 +434,18 @@ class Supervisor:
                 self.ledger.audit("supervisor", "failover-email.enqueue-error",
                                   "failover", rec.get("episode_id") or "",
                                   {"error": redact(repr(exc), 300)})
+        try:
+            failover.set_cursor(
+                "email-bridge", listed.get("next_after_id")
+                if listed.get("more") else None)
+        except Exception as exc:
+            self.ledger.audit("supervisor", "failover-email.cursor-error", "cycle",
+                              str(self.last_cycle_at),
+                              {"error": redact(repr(exc), 300)})
         return {"scanned": scanned, "enqueued": enqueued,
-                "invalid_records": listed.get("invalid_records", 0)}
+                "invalid_records": listed.get("invalid_records", 0),
+                "more": listed.get("more", False),
+                "email_policy": svc.policy_status().get("state")}
 
     # ---- 单实例 ---------------------------------------------------
     def acquire_lock(self) -> None:
@@ -722,6 +748,13 @@ class Supervisor:
         except Exception as e:
             self.last_error = repr(e)
             self.ledger.audit("supervisor", "fault.tick-error", "cycle",
+                              str(self.last_cycle_at), {"error": redact(repr(e), 800)})
+        try:
+            # 本地事实桥接不依赖协调模型，也不要求 OpenCode 当前可达。
+            out["failover_events"] = self.bridge_failover_events(now=now)
+        except Exception as e:
+            self.last_error = repr(e)
+            self.ledger.audit("supervisor", "failover-email.bridge-error", "cycle",
                               str(self.last_cycle_at), {"error": redact(repr(e), 800)})
         return out
 

@@ -228,6 +228,24 @@ SQLite 当前为 schema 3，WAL 模式。`1→2→3` 是显式迁移；整个迁
 - 发送走持久 outbox：先认领、再发送；结果未知先补证，不盲目重发。
 - 只做“需要人工介入”的通知出口，不解析邮件回复来执行控制。
 
+### 7.9 Provider 故障恢复
+
+- 默认不自动恢复。用 `oc-orch failover status` 查看本地故障链，再核对独立资源授权、路线和恢复写契约。
+- `oc-orch failover contract status` 只读检查契约；`contract install --confirm 'INSTALL provider-failover-v1'` 仅在停写并完成一致备份后安装。安装契约不会启用项目策略，也不会授予模型/费用权限。
+- `failover policy show --project <项目>` 或 `--task <任务>` 查看策略；`set-project` / `set-task` 要求完整策略 JSON、期望版本、operation ID、原因和与目标完全相同的确认文本。资源授权仍须独立配置。
+- `failover tick --episode <ID> --confirm 'RUN <ID>'` 可能切换同一 session 的模型并发送后继输入。`release` 和 `route-clear` 也都要求精确确认与原因。
+- 遇到 possible/unknown 操作时保留原身份并先对账。回退时先停止新的自动动作并核对未决操作；不得删除 failover/continuity 写保护或用旧备份覆盖新增事实，旧版写入者不能在新契约下运行。
+- 开发 fake-Service 核收不表示真实模型、真实邮件或生产发布已经核验；这些状态分开记录。
+
+### 7.9 Provider 故障恢复
+
+- 默认不自动恢复。先用 `oc-orch failover status` 查看本地故障链，再核对独立资源授权、路线和恢复写契约。
+- `oc-orch failover contract status` 只读检查契约；`contract install --confirm 'INSTALL provider-failover-v1'` 仅在停写并完成一致备份后安装。安装契约不会启用项目策略，也不会授予模型/费用权限。
+- `failover policy show --project <项目>` 或 `--task <任务>` 查看策略；`set-project` / `set-task` 需要完整策略 JSON、期望版本、operation ID、原因和与目标完全相同的确认文本。资源授权仍须独立配置。
+- `failover tick --episode <ID> --confirm 'RUN <ID>'` 可能切换同一 session 的模型并发送后继输入。`release` 和 `route-clear` 也都要求精确确认与原因。
+- 遇到 possible/unknown 操作时保留原身份并先对账。回退时先停止新的自动动作并核对未决操作；不得删除 failover/continuity 写保护或用旧备份覆盖新增事实，旧版写入者不能在新契约下运行。
+- 开发 fake-Service 验收不表示真实模型、真实邮件或生产发布已经核验；这些状态分开记录。
+
 ---
 
 ## 8. 快速开始
@@ -338,6 +356,8 @@ oc-orch rework --task T-xxxx --feedback-file feedback.md
 | `send` / `input` / `conversation` | 托管输入、受管输入生命周期、显式对话补充 |
 | `responsibility` | 未完成责任的登记、转交、等待、恢复、关闭 |
 | `delivery-policy` / `resource-authorization` | 版本化策略与独立资源授权 |
+| `failover` | provider 故障链只读状态、显式策略/契约、逐步恢复及人工解除 |
+| `failover` | provider 故障链只读状态、显式策略/契约、逐步恢复及人工解除 |
 | `prototype` / `delivery-metrics` | 原型范围与缺口；固定 cohort 的纯文件度量 |
 | `incidents` / `email` | 人工待办；默认关闭的邮件通知 |
 | `permission` | 人工处理权限等待（绝不自动批准） |

@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import shutil
+import hashlib
 import tempfile
+import threading
 import unittest
 
 from pathlib import Path
@@ -20,6 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tests.fakes import FakeClock
 
 from oc_orch.adapters.sqlite_db import connect, init
+from oc_orch.adapters.writer_guard import install_writer_guard
+from oc_orch.adapters.failover_guard import install_failover_guard
+from oc_orch import composition
 from oc_orch.adapters.failover_ledger import FailoverLedger
 from oc_orch.adapters.email_outbox import EmailOutbox
 from oc_orch.application.operator_email import OperatorEmailService
@@ -33,6 +38,19 @@ from oc_orch.domain.operator_email import (
 )
 from oc_orch.domain import failover as fo
 from oc_orch.domain import failover_notify as notify
+
+
+class TestConfiguredFailoverEmail(unittest.TestCase):
+    def test_missing_email_policy_keeps_failover_email_disabled(self):
+        with tempfile.TemporaryDirectory(prefix="oc-orch-femail-config-") as home:
+            conn = init(home)
+            try:
+                service = composition.make_configured_failover_email(
+                    conn, home, clock=FakeClock(wall_ms=1_000_000))
+            finally:
+                conn.close()
+
+        self.assertIsNone(service)
 
 
 class FakeTransport:
@@ -70,7 +88,10 @@ def _policy(project="p1"):
 class Base(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp(prefix="oc-orch-femail-")
-        init(self._tmp)
+        conn = init(self._tmp)
+        install_writer_guard(conn, actor="test")
+        install_failover_guard(conn, actor="test")
+        conn.close()
         self.clock = FakeClock(wall_ms=1_000_000)
         self.transport = FakeTransport()
 
@@ -144,17 +165,156 @@ class TestEnqueue(Base):
         finally:
             self.conn.close()
 
-    def test_revision_bump_emits_update(self):
+    def test_revision_bump_coalesces_unclaimed_first_event(self):
         svc, failover = self._svc()
         try:
             svc.enqueue_episode_event(self._seed(failover))
             ep2 = self._seed(failover, status=fo.EPISODE_SWITCH_CONFIRMED)
             out = svc.enqueue_episode_event(ep2)
             self.assertEqual(out["result"], "enqueued")
-            self.assertEqual(out["kind"], notify.KIND_UPDATE)
-            self.assertEqual(len(svc.list_items()), 2)
+            self.assertEqual(out["kind"], notify.KIND_FIRST)
+            self.assertTrue(out.get("coalesced"))
+            self.assertEqual(len(svc.list_items()), 1)
+            self.assertIn("切换已确认", svc.list_items()[0]["body"])
         finally:
             self.conn.close()
+
+    def test_wal_claim_races_first_event_coalesce_and_freezes_claimed_content(self):
+        svc, failover = self._svc()
+        try:
+            first = svc.enqueue_episode_event(self._seed(failover))
+            item_id = first["item_id"]
+            before = svc.list_items()[0]
+            updated_episode = self._seed(
+                failover, status=fo.EPISODE_SWITCH_CONFIRMED)
+            binding = svc._binding(updated_episode,
+                                   notify.EVENT_PROVIDER_FAILOVER, 2)
+            subject = "updated after switch confirmation"
+            body = "The same incident now has a confirmed fallback route."
+            fields = {
+                "condition_version": 2, "escalation_level": 0,
+                "subject": subject, "body": body,
+                "content_hash": hashlib.sha256(
+                    f"{subject}\x00{body}".encode()).hexdigest(),
+                "status": STATUS_PENDING,
+                "last_observed_at": self.clock.now_ms(),
+                "summary": {"episode_id": updated_episode["episode_id"],
+                            "status": fo.EPISODE_SWITCH_CONFIRMED,
+                            "condition_key": f"failover:{updated_episode['episode_id']}",
+                            "version": 2, "delivery_block_reason": None},
+            }
+            barrier = threading.Barrier(3)
+            results, errors = {}, []
+
+            def coalesce():
+                conn = connect(self._tmp)
+                try:
+                    outbox = EmailOutbox(conn, self.clock)
+                    barrier.wait()
+                    results["coalesce"] = outbox.coalesce_unclaimed(
+                        item_id, expected_revision=before["revision"],
+                        fields=fields, now=self.clock.now_ms(),
+                        source_binding=binding)
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    conn.close()
+
+            def claim():
+                conn = connect(self._tmp)
+                try:
+                    outbox = EmailOutbox(conn, self.clock)
+                    barrier.wait()
+                    results["claim"] = outbox.claim(
+                        item_id, owner="wal-sender", now=self.clock.now_ms())
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    conn.close()
+
+            threads = [threading.Thread(target=coalesce),
+                       threading.Thread(target=claim)]
+            for thread in threads:
+                thread.start()
+            barrier.wait()
+            for thread in threads:
+                thread.join(timeout=10)
+
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual(errors, [])
+            self.assertTrue(results["claim"]["allowed"], results)
+            claimed = results["claim"]["item"]
+            persisted = svc.list_items()[0]
+            self.assertEqual(persisted["status"], "claimed")
+            self.assertEqual(persisted["possible_submitted_at"], self.clock.now_ms())
+            self.assertEqual((persisted["subject"], persisted["body"]),
+                             (claimed["subject"], claimed["body"]))
+            self.assertIn(persisted["condition_version"], (1, 2))
+            self.assertEqual(sum(row["kind"] == notify.KIND_FIRST
+                                 for row in svc.list_items()), 1)
+
+            # Even if a coalescer retries after observing the claim, the exact
+            # subject/body frozen for the sender remain unchanged.
+            c = connect(self._tmp)
+            try:
+                retry = EmailOutbox(c, self.clock).coalesce_unclaimed(
+                    item_id, expected_revision=persisted["revision"],
+                    fields=fields, now=self.clock.now_ms(),
+                    source_binding=binding)
+            finally:
+                c.close()
+            self.assertFalse(retry["coalesced"])
+            after = svc.list_items()[0]
+            self.assertEqual(after["subject"], claimed["subject"])
+            self.assertEqual(after["body"], claimed["body"])
+        finally:
+            self.conn.close()
+
+    def test_ordinary_manual_switch_has_no_failover_email_event(self):
+        svc, failover = self._svc()
+        try:
+            ordinary_switch = {"status": "manual_switch", "project": "p1",
+                               "episode_id": "ordinary-switch"}
+            out = svc.enqueue_episode_event(ordinary_switch)
+            self.assertEqual(out["result"], "no-event-type")
+            self.assertEqual(svc.list_items(), [])
+        finally:
+            self.conn.close()
+
+    def test_claimed_incident_keeps_content_and_update_budget_across_reopen(self):
+        svc, failover = self._svc()
+        first = svc.enqueue_episode_event(self._seed(failover))
+        original_body = svc.list_items()[0]["body"]
+        claim = svc.email._outbox.claim(
+            first["item_id"], owner="sender-before-restart", now=self.clock.now_ms())
+        self.assertTrue(claim["allowed"])
+        self.conn.close()
+
+        states = [fo.EPISODE_SWITCH_REQUESTED,
+                  fo.EPISODE_SWITCH_CONFIRMED,
+                  fo.EPISODE_CONTINUATION_REQUESTED,
+                  fo.EPISODE_CONTINUATION_UNKNOWN]
+        outcomes = []
+        for index, state in enumerate(states):
+            svc, failover = self._svc()
+            episode = self._seed(failover, status=state)
+            outcomes.append(svc.enqueue_episode_event(episode))
+            if index < 3:
+                self.assertEqual(outcomes[-1]["result"], "enqueued")
+                self.assertEqual(outcomes[-1]["kind"], notify.KIND_UPDATE)
+            else:
+                self.assertEqual(outcomes[-1]["result"], "no-new-event")
+                self.assertEqual(outcomes[-1]["reason"], "update-budget-exhausted")
+            self.conn.close()
+
+        svc, _ = self._svc()
+        rows = svc.list_items()
+        self.assertEqual(len(rows), 4)  # first + the configured three updates
+        first_row = next(row for row in rows if row["kind"] == notify.KIND_FIRST)
+        self.assertEqual(first_row["status"], "claimed")
+        self.assertEqual(first_row["body"], original_body)
+        self.assertIsNotNone(first_row["possible_submitted_at"])
+        self.conn.close()
 
     def test_quick_resume_still_sends_first(self):
         # N07：快速恢复（未首发即 resumed 但 rows=[]）仍发首封摘要。
@@ -176,6 +336,8 @@ class TestEnqueue(Base):
             out = svc.enqueue_episode_event(ep)
             self.assertEqual(out["incident_type"], notify.EVENT_PROVIDER_FAULT)
             self.assertEqual(out["kind"], notify.KIND_FIRST)
+            self.assertIn("人工处理", svc.list_items()[0]["body"])
+            self.assertIn("下一动作", svc.list_items()[0]["body"])
         finally:
             self.conn.close()
 
@@ -224,6 +386,8 @@ class TestValidator(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="oc-orch-fv-")
         try:
             conn = init(tmp)
+            install_writer_guard(conn, actor="test")
+            install_failover_guard(conn, actor="test")
             clock = FakeClock(wall_ms=1)
             failover = FailoverLedger(conn, clock=clock.now_ms)
             ep = {

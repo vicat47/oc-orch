@@ -251,6 +251,49 @@ def make_failover_email(conn, *, clock=None, policy=None, transport=None):
     return FailoverEmailService(email, actual_clock)
 
 
+def make_configured_failover_email(conn, home, *, clock=None):
+    """按本机邮件策略装配故障知会；未启用时不创建传输器。"""
+    from .adapters.email_config import load_email_runtime
+
+    runtime = load_email_runtime(home)
+    if not runtime.enabled:
+        return None
+
+    from .adapters.agently_mail import AgentlyMailTransport
+
+    return make_failover_email(
+        conn, clock=clock, policy=runtime.policy,
+        transport=AgentlyMailTransport(sender_binding=runtime.sender_binding))
+
+
+def make_failover_snapshot(conn, *, task_id=None, project=None, clock=None):
+    """组合只读状态查询使用的持久端口；应用层只接触结构化读接口。"""
+    from .adapters.email_outbox import EmailOutbox
+    from .adapters.failover_ledger import FailoverLedger
+    from .application.failover_status import failover_snapshot
+
+    actual_clock = clock or SystemClock()
+    failover = FailoverLedger(conn, clock=actual_clock.now_ms)
+    outbox = EmailOutbox(
+        conn, actual_clock, source_validator=failover.make_source_validator(),
+        require_source_binding=True)
+    return failover_snapshot(failover, outbox, task_id=task_id, project=project)
+
+
+def make_failover_control(conn, ledger, *, clock=None):
+    """显式的 operator 用例，屏蔽 CLI 对存储和契约安装适配器的依赖。"""
+    from .adapters.failover_guard import install_failover_guard
+    from .adapters.failover_ledger import FailoverLedger
+    from .application.failover_control import FailoverControl
+
+    actual_clock = clock or SystemClock()
+    store = FailoverLedger(conn, clock=actual_clock.now_ms, audit=ledger.audit)
+    return FailoverControl(
+        store,
+        install_guard=lambda actor: install_failover_guard(conn, actor=actor),
+        task_project=lambda task_id: ledger.get_task(task_id).get("project"))
+
+
 def make_responsibilities(ledger):
     """S4 后续责任存储：与 Ledger 共用连接/时钟，不自动 DDL（schema v3）。"""
     from .adapters.responsibility_ledger import ResponsibilityStore
@@ -273,8 +316,42 @@ def make_fault_recovery(conn, home, *, client, clock=None):
     ledger = Ledger(conn, home, clock=actual_clock)
     failover = FailoverLedger(conn, clock=actual_clock.now_ms,
                               audit=ledger.audit)
+    guard = failover.guard_valid()
+    if not guard.get("valid"):
+        from .domain.errors import LedgerError
+        raise LedgerError("FAILOVER_GUARD_INVALID",
+                          "provider failover 写契约未安装或无效；自动恢复保持关闭",
+                          guard)
     orch = application(ledger, client, load_config(home), clock=actual_clock)
     resource = make_resource_authorization(ledger, actual_clock)
+
+    def recovery_dispatch(**kwargs):
+        from .adapters.failover_guard import authorized_failover_operation
+        from .adapters.failover_ledger import FailoverLedger
+
+        operation_id = kwargs.pop("_failover_operation_id", None)
+        episode_id = kwargs.pop("_failover_episode_id", None)
+        if not operation_id or not episode_id:
+            from .domain.errors import LedgerError
+            raise LedgerError("FAILOVER_OPERATION_REQUIRED",
+                              "恢复派单缺少持久化 episode/operation 身份")
+        episode = FailoverLedger(conn, clock=actual_clock.now_ms).get_record(
+            "episode", episode_id)
+        metadata = (episode or {}).get("metadata") or {}
+        if (not episode or episode.get("status") != "continuation_requested"
+                or metadata.get("operation_id") != operation_id
+                or episode.get("session_id") != kwargs.get("session")):
+            from .domain.errors import LedgerError
+            raise LedgerError("FAILOVER_OPERATION_MISMATCH",
+                              "恢复派单身份与持久化故障链不匹配")
+        failover_context = {
+            "episode_id": episode_id,
+            "operation_id": operation_id,
+            "old_attempt_id": str(episode.get("old_attempt_id") or ""),
+            "failed_route": str(episode.get("route") or ""),
+        }
+        with authorized_failover_operation(conn, operation_id):
+            return orch.dispatch(**kwargs, _provider_failover=failover_context)
 
     def authorize(**kw):
         try:
@@ -286,7 +363,7 @@ def make_fault_recovery(conn, home, *, client, clock=None):
 
     return FaultRecoveryService(
         ledger=ledger, failover=failover, client=client(), clock=actual_clock,
-        dispatch=orch.dispatch, authorize=authorize)
+        dispatch=recovery_dispatch, authorize=authorize)
 
 
 def make_managed_inputs(conn, home, *, client, clock=None, responsibilities=None):
@@ -375,9 +452,14 @@ class Results:
 
 
 def application(ledger, client, cfg, *, clock=None):
+    actual_clock = clock or SystemClock()
+    from .adapters.failover_ledger import FailoverLedger
+
     return Orchestration(ledger, client=client,
-                         results=Results(ledger, client, cfg, clock=clock),
-                         clock=clock or SystemClock(), new_id=short_id)
+                         results=Results(ledger, client, cfg, clock=actual_clock),
+                         clock=actual_clock, new_id=short_id,
+                         route_blocks=FailoverLedger(
+                             ledger.conn, clock=actual_clock.now_ms))
 
 
 @contextmanager

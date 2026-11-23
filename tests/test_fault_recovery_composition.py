@@ -10,6 +10,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from pathlib import Path
 import sys
@@ -22,12 +23,19 @@ from tests.fakes import FakeClient, FakeClock, FakeService
 from oc_orch.composition import init
 from oc_orch.composition import make_fault_recovery
 from oc_orch.adapters.failover_ledger import FailoverLedger
+from oc_orch.adapters.writer_guard import install_writer_guard
+from oc_orch.adapters.failover_guard import install_failover_guard
+from oc_orch.domain import failover as fo
+from oc_orch.supervisor import Supervisor
 
 
 class TestCompositionSmoke(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp(prefix="oc-orch-frc-")
-        init(self._tmp)
+        conn = init(self._tmp)
+        install_writer_guard(conn, actor="test")
+        install_failover_guard(conn, actor="test")
+        conn.close()
         self.clock = FakeClock(wall_ms=1_000_000)
         self.client = FakeClient(FakeService())
 
@@ -70,6 +78,45 @@ class TestCompositionSmoke(unittest.TestCase):
             self.assertTrue(guard["valid"])
         finally:
             conn.close()
+
+    def test_email_bridge_replays_after_cursor_failure_without_model_or_chat_call(self):
+        sup = Supervisor(self._tmp, client=self.client, clock=self.clock)
+        self.addCleanup(sup.conn.close)
+        task = sup.ledger.create_task(project="bridge-project", title="bridge test")
+        chat_notice = sup.ledger.enqueue_notification(
+            kind="execution_failed", target_session="ses-coordinator",
+            dedupe_key="execution-failed:bridge-test",
+            payload={"summary": "provider failed"}, project="bridge-project",
+            task_id=task["id"])
+        self.assertEqual(sup.ledger.ack_notifications(
+            [chat_notice["id"]], actor="acceptance-ack"), 1)
+        failover = FailoverLedger(sup.conn, clock=self.clock.now_ms)
+        episode = {
+            "episode_id": "EP-bridge-replay", "project": "bridge-project",
+            "task_id": task["id"], "session_id": "ses-worker",
+            "route": "deepseek/deepseek-flash", "category": "quota",
+            "status": fo.EPISODE_BLOCKED_MANUAL, "switches_used": 0,
+            "attempts_used": 1, "old_attempt_id": "A-failed",
+            "created_at": self.clock.now_ms(), "updated_at": self.clock.now_ms(),
+            "metadata": {"error_message": "provider quota exhausted"},
+        }
+        failover.upsert_record("episode", episode["episode_id"], episode,
+                               expected_revision=None)
+
+        # Model the crash window after outbox enqueue but before bridge cursor commit.
+        with patch.object(FailoverLedger, "set_cursor",
+                          side_effect=RuntimeError("cursor commit lost")):
+            first = sup.bridge_failover_events(now=self.clock.now_ms())
+        self.assertEqual(first["scanned"], 1)
+        second = sup.bridge_failover_events(now=self.clock.now_ms())
+        self.assertEqual(second["scanned"], 1)
+        self.assertEqual(second["enqueued"], 0)
+        items = sup._failover_email_service().list_items()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["status"], "pending-auth")
+        self.assertEqual(items[0]["incident_type"], "provider-fault")
+        self.assertEqual(self.client.switch_calls, [])
+        self.assertEqual(self.client.prompt_calls, [])
 
 
 if __name__ == "__main__":

@@ -18,6 +18,9 @@ from oc_orch.composition import SystemClock, make_target_gate  # noqa: E402
 from oc_orch.config import load_config  # noqa: E402
 from oc_orch.db import init  # noqa: E402
 from oc_orch.ledger import Ledger  # noqa: E402
+from oc_orch.adapters.writer_guard import install_writer_guard  # noqa: E402
+from oc_orch.adapters.failover_guard import install_failover_guard  # noqa: E402
+from oc_orch.adapters.failover_ledger import FailoverLedger  # noqa: E402
 from oc_orch.results import collect_attempt, scan_deliverable_baseline  # noqa: E402
 from oc_orch.util import now_ms  # noqa: E402
 from oc_orch.web import WebServer  # noqa: E402
@@ -104,6 +107,34 @@ class TestWeb(unittest.TestCase):
         self.assertTrue(data["ok"])
         self.assertNotIn("dispatch", body)  # 不泄漏完整 prompt
         self.assertIn("read_only", data["snapshot"])
+
+    def test_task_detail_shows_failover_without_remote_calls_or_private_error(self):
+        task = self.ledger.create_task(project="/tmp/p-failover",
+                                       title="failover projection")
+        install_writer_guard(self.conn, actor="test")
+        install_failover_guard(self.conn, actor="test")
+        failover = FailoverLedger(self.conn, clock=now_ms)
+        failover.upsert_record("episode", "EP-web-readonly", {
+            "episode_id": "EP-web-readonly", "project": task["project"],
+            "task_id": task["id"], "session_id": "ses-web-readonly",
+            "route": "provider/model", "category": "quota", "status": "open",
+            "switches_used": 0, "attempts_used": 1, "created_at": now_ms(),
+            "updated_at": now_ms(),
+            "metadata": {"error_message": "private provider response body"},
+        }, expected_revision=None)
+        calls = []
+        self.server.client_factory = lambda: calls.append("client")
+
+        status, body = self.req(f"/api/task/{task['id']}")
+
+        self.assertEqual(status, 200, body)
+        data = json.loads(body)
+        self.assertTrue(data["failover"]["read_only"])
+        self.assertEqual(data["failover"]["network_calls"], 0)
+        self.assertEqual(data["failover"]["episodes"][0]["episode_id"],
+                         "EP-web-readonly")
+        self.assertNotIn("private provider response body", body)
+        self.assertEqual(calls, [])
 
     def test_coordinator_titles(self):
         self.server.client_factory = lambda: _FakeTitlesClient()

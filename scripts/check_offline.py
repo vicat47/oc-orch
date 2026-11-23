@@ -43,6 +43,8 @@ LAYERS: dict[str, list[str]] = {
         "test_delivery_policy.py",      # 交付策略严格值与动态指令纯投影
         "test_route_context.py",        # 上下文/cache/估计的未知与过期投影
         "test_delivery_metrics.py",     # 固定cohort/窗口/force/未结及切换度量
+        "test_failover_notify.py",     # provider故障知会事件域规则
+        "test_failover_domain.py",     # provider故障分类、切换与预算域规则
     ],
     "integration": [
         "test_claim_atomicity.py",      # F1 写权认领原子性
@@ -111,6 +113,12 @@ LAYERS: dict[str, list[str]] = {
         "test_execution_acceptance.py",   # SSE 事实冲突、输入身份及无 turn 基线
         "test_publication_acceptance.py", # 旧代次发布、ACK 交错及 >300 路由责任
         "test_completion_migration.py",    # SQLite 一致备份与新旧版本混用演练
+        "test_fault_recovery.py",          # provider故障观察、切换和恢复应用路径
+        "test_fault_recovery_composition.py", # Supervisor故障恢复装配冒烟
+        "test_failover_email.py",          # 故障知会/outbox发送闭环
+        "test_failover_ledger.py",         # 故障episode/策略/路由阻断台账契约
+        "test_failover_guard.py",          # 显式故障恢复写契约、混版拒写与session占用
+        "test_failover_acceptance.py",     # fake-Service：切换、共享派单、collect/verify与假邮件
     ],
     "contract": [
         "test_verification_cli.py",     # F2 CLI 契约
@@ -139,6 +147,7 @@ LAYERS: dict[str, list[str]] = {
         "test_delivery_policy_entrypoints.py", # CLI/Web严格切换/覆盖投影/禁自动授权
         "test_operator_turn_web.py",       # 显式用户输入API/CLI/只读/伪来源拒绝
         "test_prototype_web.py",           # 原型CLI/Web共享记录与历史只读对账
+        "test_failover_cli.py",             # failover只读查询、策略CAS与显式确认CLI
         "test_agently_mail_contract.py", # 邮件CLI适配器离线契约，无真实邮件
         "test_compatibility_facades.py",  # 旧导入与 mock.patch 契约
     ],

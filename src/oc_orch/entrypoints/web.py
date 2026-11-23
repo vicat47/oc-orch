@@ -1037,8 +1037,12 @@ class WebServer:
                 prototype = make_prototype(ledger).show(task_id)
             except LedgerError as exc:
                 prototype = {"ok": False, "code": exc.code}
+            from ..composition import make_failover_snapshot
+
+            failover_status = make_failover_snapshot(conn, task_id=task_id)
             return {
                 "ok": True,
+                "failover": failover_status,
                 "delivery_policy": delivery_policy,
                 "project_delivery_policy": project_policy,
                 "prototype": prototype,

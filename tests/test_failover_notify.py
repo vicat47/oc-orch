@@ -36,6 +36,7 @@ class TestEventType(unittest.TestCase):
                          EVENT_PROVIDER_FAILOVER)
         self.assertEqual(event_type_for_state(EPISODE_RESUMED),
                          EVENT_PROVIDER_FAILOVER)
+        self.assertEqual(event_type_for_state("paused"), "")
         self.assertEqual(event_type_for_state("bogus"), "")
 
 
@@ -88,8 +89,9 @@ class TestDecide(unittest.TestCase):
     def test_update_budget_limited(self):
         rows = [{"kind": KIND_FIRST, "condition_version": 1},
                 {"kind": KIND_UPDATE, "condition_version": 2},
-                {"kind": KIND_UPDATE, "condition_version": 3}]
-        out = decide(version=4, rows=rows, max_updates=3)
+                {"kind": KIND_UPDATE, "condition_version": 3},
+                {"kind": KIND_UPDATE, "condition_version": 4}]
+        out = decide(version=5, rows=rows, max_updates=3)
         self.assertIsNone(out["event"])
         self.assertEqual(out["reason"], "update-budget-exhausted")
 

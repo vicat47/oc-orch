@@ -31,7 +31,9 @@ import sqlite3
 from typing import Any, Callable
 
 from ..util import json_dumps, json_loads, short_id
+from ..domain.errors import FailoverStateError
 from .sqlite_db import meta_get, meta_set, transaction
+from .failover_guard import check_failover_guard, session_lock_key
 
 FAILOVER_SCHEMA = 1
 FAILOVER_SCHEMA_KEY = "failover:schema"
@@ -53,14 +55,6 @@ _RECORD_KINDS: dict[str, tuple[str, ...]] = {
                   "status", "revision", "possible_submitted_at",
                   "created_at", "updated_at"),
 }
-
-
-class FailoverStateError(RuntimeError):
-    """failover 记录损坏、schema 不兼容或 CAS 冲突。
-
-    调用方必须视为“状态未知、不得继续”，保留原记录转可见处理，而不是当作
-    无记录/可重试放行。
-    """
 
 
 from ..domain.failover import episode_id as failover_episode_id  # noqa: E402
@@ -198,9 +192,29 @@ class FailoverLedger:
             except Exception:
                 pass  # 审计失败不阻断业务写入（任务5.1写契约单独校验）
 
-    def _read_schema(self) -> None:
-        if meta_get(self.conn, FAILOVER_SCHEMA_KEY) is None:
+    def _read_schema(self) -> bool:
+        """只读检查功能 schema；查询不能隐式写 marker（F25）。"""
+        version = meta_get(self.conn, FAILOVER_SCHEMA_KEY)
+        if version is None:
+            return False
+        if str(version) != str(FAILOVER_SCHEMA):
+            raise FailoverStateError(f"failover schema 不兼容：{version!r}")
+        return True
+
+    def _require_guard(self) -> None:
+        try:
+            valid = check_failover_guard(self.conn)
+        except Exception as exc:
+            raise FailoverStateError(f"failover 写契约无效：{exc}") from exc
+        if not valid:
+            raise FailoverStateError("failover 写契约未显式安装；自动恢复保持关闭")
+
+    def _ensure_schema(self) -> None:
+        version = meta_get(self.conn, FAILOVER_SCHEMA_KEY)
+        if version is None:
             meta_set(self.conn, FAILOVER_SCHEMA_KEY, str(FAILOVER_SCHEMA))
+        elif str(version) != str(FAILOVER_SCHEMA):
+            raise FailoverStateError(f"failover schema 不兼容：{version!r}")
 
     def _load(self, kind: str, record_id: str) -> dict | None:
         raw = meta_get(self.conn, _record_key(kind, record_id))
@@ -239,7 +253,8 @@ class FailoverLedger:
             **record,
         }
         with transaction(self.conn):
-            self._read_schema()
+            self._require_guard()
+            self._ensure_schema()
             existing = self._load(kind, record_id)
             if existing is None:
                 if expected_revision is not None:
@@ -268,8 +283,259 @@ class FailoverLedger:
                          "project": rec.get("project")})
         return {"created": created, "record": rec, "revision": rec["revision"]}
 
+    def prepare_switch(self, *, episode_id: str, operation_id: str,
+                       expected_revision: int, target: dict, owner: str,
+                       now: int | None = None) -> dict:
+        """原子认领 session、保存 operation 和 possible switch（F15/F26）。
+
+        事务提交后才允许发一次 POST。并发调谐中只有一个调用能取得 session
+        lock；崩溃后保留 possible 与占用事实，不会盲目重发。
+        """
+        if not (_nk(episode_id) and _nk(operation_id) and _nk(owner)):
+            raise ValueError("episode_id/operation_id/owner 必须为非空字符串")
+        now = now if isinstance(now, int) else self._now_ms()
+        with transaction(self.conn):
+            self._require_guard()
+            self._ensure_schema()
+            episode = self._load("episode", episode_id)
+            if episode is None:
+                return {"claimed": False, "reason": "episode-missing"}
+            if int(episode.get("revision", -1)) != int(expected_revision):
+                return {"claimed": False, "reason": "stale-episode",
+                        "episode": episode}
+            if episode.get("status") not in ("open", "waiting_quiescence"):
+                return {"claimed": False, "reason": "episode-not-open",
+                        "episode": episode}
+            session_id = episode.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                return {"claimed": False, "reason": "session-unknown",
+                        "episode": episode}
+            lock_key = session_lock_key(session_id)
+            if meta_get(self.conn, lock_key) is not None:
+                return {"claimed": False, "reason": "session-occupied",
+                        "episode": episode}
+            if self._load("operation", operation_id) is not None:
+                return {"claimed": False, "reason": "operation-exists",
+                        "episode": episode}
+
+            operation = {
+                "schema": FAILOVER_SCHEMA, "kind": "operation",
+                "operation_id": operation_id, "episode_id": episode_id,
+                "session_id": session_id, "status": "switch-possible",
+                "revision": 1, "possible_submitted_at": now,
+                "created_at": now, "updated_at": now,
+                "metadata": {
+                    "target": dict(target), "owner": owner,
+                    "confirm_queries": 0,
+                    "next_confirm_at": now,
+                    "confirm_deadline_at": now + 5 * 60 * 1000,
+                },
+            }
+            self._store(operation_id, operation)
+            meta_set(self.conn, lock_key, operation_id)
+            episode["status"] = "switch_requested"
+            episode["switches_used"] = int(episode.get("switches_used") or 0) + 1
+            episode["metadata"] = {**dict(episode.get("metadata") or {}),
+                                   "operation_id": operation_id,
+                                   "target": dict(target),
+                                   "possible_submitted_at": now,
+                                   "next_confirm_at": now,
+                                   "confirm_deadline_at": now + 5 * 60 * 1000,
+                                   "confirm_queries": 0}
+            episode["revision"] = int(episode["revision"]) + 1
+            episode["updated_at"] = now
+            self._store(episode_id, episode)
+        self._audit_log("failover.operation.possible", "operation", operation_id,
+                        {"episode_id": episode_id, "session_id": session_id,
+                         "owner": owner})
+        return {"claimed": True, "episode": episode, "operation": operation}
+
+    def record_operation_result(self, operation_id: str, *, status: str,
+                                detail: dict | None = None) -> dict:
+        """记录 POST 返回类别；不改变原操作身份或释放 unknown 占用。"""
+        with transaction(self.conn):
+            self._require_guard()
+            self._ensure_schema()
+            operation = self._load("operation", operation_id)
+            if operation is None:
+                raise FailoverStateError("failover operation 不存在")
+            operation["status"] = status
+            operation["metadata"] = {**dict(operation.get("metadata") or {}),
+                                      **(detail or {})}
+            operation["revision"] = int(operation["revision"]) + 1
+            operation["updated_at"] = self._now_ms()
+            self._store(operation_id, operation)
+        return operation
+
+    def prepare_continuation(self, *, episode_id: str, operation_id: str,
+                             expected_revision: int, attempt_id: str,
+                             message_id: str, now: int | None = None) -> dict:
+        """先持久化唯一后继身份，再允许共享 dispatch 发出输入（F19/F20）。"""
+        if not all(_nk(v) for v in
+                   (episode_id, operation_id, attempt_id, message_id)):
+            raise ValueError("continuation identities must be non-empty")
+        now = now if isinstance(now, int) else self._now_ms()
+        with transaction(self.conn):
+            self._require_guard()
+            self._ensure_schema()
+            episode = self._load("episode", episode_id)
+            if episode is None:
+                return {"prepared": False, "reason": "episode-missing"}
+            if int(episode.get("revision", -1)) != int(expected_revision):
+                return {"prepared": False, "reason": "stale-episode",
+                        "episode": episode}
+            operation = self._load("operation", operation_id)
+            if operation is None or operation.get("episode_id") != episode_id:
+                return {"prepared": False, "reason": "operation-mismatch",
+                        "episode": episode}
+            lock = meta_get(self.conn, session_lock_key(episode.get("session_id") or ""))
+            if lock != operation_id:
+                return {"prepared": False, "reason": "session-lock-mismatch",
+                        "episode": episode}
+            metadata = dict(episode.get("metadata") or {})
+            existing_attempt = metadata.get("successor_attempt_id")
+            existing_message = metadata.get("successor_message_id")
+            if existing_attempt or existing_message:
+                if (existing_attempt, existing_message) != (attempt_id, message_id):
+                    return {"prepared": False, "reason": "continuation-identity-frozen",
+                            "episode": episode}
+                return {"prepared": True, "created": False, "episode": episode,
+                        "operation": operation}
+            if episode.get("status") != "switch_confirmed":
+                return {"prepared": False, "reason": "switch-not-confirmed",
+                        "episode": episode}
+            metadata.update({"successor_attempt_id": attempt_id,
+                             "successor_message_id": message_id,
+                             "possible_continuation_at": now})
+            episode["metadata"] = metadata
+            episode["status"] = "continuation_requested"
+            episode["revision"] = int(episode["revision"]) + 1
+            episode["updated_at"] = now
+            operation["status"] = "continuation-possible"
+            operation["metadata"] = {**dict(operation.get("metadata") or {}),
+                                      "successor_attempt_id": attempt_id,
+                                      "successor_message_id": message_id,
+                                      "possible_continuation_at": now}
+            operation["revision"] = int(operation["revision"]) + 1
+            operation["updated_at"] = now
+            self._store(episode_id, episode)
+            self._store(operation_id, operation)
+        self._audit_log("failover.continuation.possible", "episode", episode_id,
+                        {"operation_id": operation_id,
+                         "successor_attempt_id": attempt_id,
+                         "successor_message_id": message_id})
+        return {"prepared": True, "created": True, "episode": episode,
+                "operation": operation}
+
+    def get_session_lock(self, session_id: str) -> dict | None:
+        """只读读取 session 恢复占用及关联 episode/operation。"""
+        if not self._read_schema():
+            return None
+        operation_id = meta_get(self.conn, session_lock_key(session_id))
+        if not operation_id:
+            return None
+        operation = self._load("operation", operation_id)
+        if operation is None:
+            raise FailoverStateError("session lock 指向缺失 operation")
+        episode = self._load("episode", operation.get("episode_id") or "")
+        if episode is None:
+            raise FailoverStateError("session lock 指向缺失 episode")
+        return {"session_id": session_id, "operation_id": operation_id,
+                "operation": operation, "episode": episode}
+
+    def list_session_locks(self, *, limit: int = 50) -> list[dict]:
+        """只读列出恢复占用；坏引用抛错，不把未知状态当作空闲。"""
+        lim = _strict_limit(limit)
+        if not self._read_schema():
+            return []
+        rows = self.conn.execute(
+            "SELECT key,value FROM meta WHERE key LIKE ? ORDER BY key LIMIT ?",
+            ("failover:session-lock:%", lim + 1)).fetchall()
+        if len(rows) > lim:
+            raise FailoverStateError("恢复占用数量超过只读投影上限")
+        out = []
+        for row in rows:
+            session_id = str(row["key"])[len("failover:session-lock:"):]
+            if not session_id:
+                raise FailoverStateError("session lock 缺少 session 身份")
+            lock = self.get_session_lock(session_id)
+            if lock is None:
+                raise FailoverStateError("session lock 读取期间消失")
+            out.append(lock)
+        return out
+
+    def has_pending_input(self, session_id: str) -> bool:
+        """检查会话是否有未完成的受管输入；SQL 保持在 SQLite 适配器内。"""
+        row = self.conn.execute(
+            "SELECT 1 FROM session_inputs WHERE session_id=? AND admission_state NOT IN "
+            "('delivered','cancelled','released','recorded') LIMIT 1",
+            (session_id,)).fetchone()
+        return row is not None
+
+    def list_route_blocks(self, *, limit: int = 50) -> list[dict]:
+        """只读列出原路线阻断，包含已过观察窗但未人工解除的记录。"""
+        lim = _strict_limit(limit)
+        if not self._read_schema():
+            return []
+        rows = self.conn.execute(
+            "SELECT key,value FROM meta WHERE key LIKE ? ORDER BY key LIMIT ?",
+            (ROUTE_BLOCK_PREFIX + "%", lim + 1)).fetchall()
+        if len(rows) > lim:
+            raise FailoverStateError("路线阻断数量超过只读投影上限")
+        out = []
+        for row in rows:
+            raw = json_loads(row["value"], default=None)
+            if not isinstance(raw, dict) or not _nk(raw.get("route")):
+                raise FailoverStateError("failover 路线阻断记录损坏")
+            current = self.is_route_blocked(raw["route"])
+            if current is None:
+                raise FailoverStateError("failover 路线阻断读取期间消失")
+            out.append(current)
+        return out
+
+    def release_session_lock(self, session_id: str, *, operation_id: str,
+                             actor: str, reason: str) -> dict:
+        """带明确人工理由解除恢复占用；CAS 防止误清晚到的新 operation。"""
+        if not (_nk(actor) and _nk(reason) and _nk(operation_id)):
+            raise ValueError("actor/reason/operation_id 必须为非空字符串")
+        now = self._now_ms()
+        with transaction(self.conn):
+            self._require_guard()
+            self._ensure_schema()
+            key = session_lock_key(session_id)
+            current = meta_get(self.conn, key)
+            if current is None:
+                return {"released": False, "reason": "not-occupied"}
+            if current != operation_id:
+                raise FailoverStateError("session lock operation 已变化；拒绝误清")
+            operation = self._load("operation", operation_id)
+            if operation is None:
+                raise FailoverStateError("session lock 指向缺失 operation")
+            episode_id = operation.get("episode_id")
+            episode = self._load("episode", episode_id or "")
+            if episode is None:
+                raise FailoverStateError("session lock 指向缺失 episode")
+            self.conn.execute("DELETE FROM meta WHERE key=?", (key,))
+            episode["metadata"] = {**dict(episode.get("metadata") or {}),
+                                   "session_lock_released_at": now,
+                                   "session_lock_released_by": actor,
+                                   "session_lock_release_reason": reason[:300]}
+            if episode.get("status") not in ("blocked_manual", "cancelled",
+                                               "superseded", "resumed"):
+                episode["status"] = "blocked_manual"
+                episode["metadata"]["manual_release_closed_episode"] = True
+            episode["revision"] = int(episode["revision"]) + 1
+            episode["updated_at"] = now
+            self._store(episode_id, episode)
+        self._audit_log("failover.session-lock.release", "episode", episode_id,
+                        {"session_id": session_id, "operation_id": operation_id,
+                         "actor": actor, "reason": reason[:200]})
+        return {"released": True, "session_id": session_id,
+                "operation_id": operation_id, "revision": episode["revision"]}
+
     def get_record(self, kind: str, record_id: str) -> dict | None:
-        self._read_schema()
+        if not self._read_schema():
+            return None
         return self._load(kind, record_id)
 
     def list_records(self, kind: str, *, project: str | None = None,
@@ -280,7 +546,9 @@ class FailoverLedger:
         after = _strict_after(after_id)
         if kind not in _RECORD_KINDS:
             raise FailoverStateError(f"未知记录种类：{kind!r}")
-        self._read_schema()
+        if not self._read_schema():
+            return {"records": [], "more": False, "next_after_id": None,
+                    "invalid_records": 0}
         prefix = _record_key(kind, "")
         sql = "SELECT key, value FROM meta WHERE key LIKE ?"
         args: list[Any] = [prefix + "%"]
@@ -319,6 +587,9 @@ class FailoverLedger:
 
     def get_policy(self, scope: str, scope_id: str) -> dict | None:
         raw = meta_get(self.conn, self._policy_key(scope, scope_id))
+        if not self._read_schema():
+            return None
+        raw = meta_get(self.conn, self._policy_key(scope, scope_id))
         if raw is None:
             return None
         policy = json_loads(raw, default=None)
@@ -328,15 +599,41 @@ class FailoverLedger:
         return policy
 
     def set_policy(self, scope: str, scope_id: str, policy: dict, *,
-                   expected_revision: int | None) -> dict:
+                   expected_revision: int | None,
+                   operation_id: str | None = None,
+                   reason: str | None = None,
+                   actor: str = "operator") -> dict:
         """版本化策略写入（CAS）。expected_revision=None → 仅创建。"""
         if not (_nk(scope) and _nk(scope_id)):
             raise ValueError("scope/scope_id 必须为非空字符串")
+        if operation_id is not None and not _nk(operation_id):
+            raise ValueError("operation_id 必须为非空字符串")
+        if reason is not None and not _nk(reason):
+            raise ValueError("reason 必须为非空字符串")
+        if not _nk(actor):
+            raise ValueError("actor 必须为非空字符串")
         now = self._now_ms()
         key = self._policy_key(scope, scope_id)
         with transaction(self.conn):
-            self._read_schema()
+            self._require_guard()
+            self._ensure_schema()
             existing = self.get_policy(scope, scope_id)
+            if existing is not None and operation_id is not None \
+                    and existing.get("last_operation_id") == operation_id:
+                candidate = {**existing, **policy}
+                candidate.pop("revision", None)
+                comparison = {key: value for key, value in existing.items()
+                              if key not in ("revision", "created_at", "updated_at",
+                                             "updated_by", "update_reason",
+                                             "last_operation_id")}
+                proposed = {key: value for key, value in candidate.items()
+                            if key not in ("created_at", "updated_at",
+                                           "updated_by", "update_reason",
+                                           "last_operation_id")}
+                if comparison == proposed:
+                    return {"created": False, "replayed": True,
+                            "policy": existing, "revision": existing["revision"]}
+                raise FailoverStateError("failover operation_id 已用于不同策略")
             if existing is None:
                 if expected_revision is not None:
                     raise FailoverStateError(
@@ -356,12 +653,17 @@ class FailoverLedger:
                        "revision": int(existing["revision"]) + 1,
                        "created_at": existing["created_at"], "updated_at": now}
                 created = False
+            rec.update({"updated_by": actor,
+                        "update_reason": str(reason or "")[:300],
+                        "last_operation_id": operation_id})
             _validate_policy(rec)
             meta_set(self.conn, key, json_dumps(rec))
         self._audit_log("failover.policy." + ("create" if created else "update"),
                         "policy", f"{scope}:{scope_id}",
-                        {"revision": rec["revision"], "enabled": rec.get("enabled")})
-        return {"created": created, "policy": rec, "revision": rec["revision"]}
+                        {"revision": rec["revision"], "enabled": rec.get("enabled"),
+                         "operation_id": operation_id, "reason": str(reason or "")[:200]})
+        return {"created": created, "replayed": False,
+                "policy": rec, "revision": rec["revision"]}
 
     # ---- 原路线硬故障阻断 ----------------------------------------------------
     def set_route_blocked(self, route: str, *, reason: str, until_ms: int | None,
@@ -374,6 +676,8 @@ class FailoverLedger:
         entry = {"schema": FAILOVER_SCHEMA, "route": route, "reason": reason[:500],
                  "until_ms": until_ms, "blocked_at": now, "revision": 1}
         with transaction(self.conn):
+            self._require_guard()
+            self._ensure_schema()
             raw = meta_get(self.conn, key)
             prev = json_loads(raw, default=None)
             if isinstance(prev, dict):
@@ -384,7 +688,11 @@ class FailoverLedger:
         return dict(entry)
 
     def is_route_blocked(self, route: str, *, now: int | None = None) -> dict | None:
+        if not self._read_schema():
+            return None
         raw = meta_get(self.conn, f"{ROUTE_BLOCK_PREFIX}{route}")
+        if raw is None and "#" in route:
+            raw = meta_get(self.conn, f"{ROUTE_BLOCK_PREFIX}{route.split('#', 1)[0]}")
         if raw is None:
             return None
         entry = json_loads(raw, default=None)
@@ -396,9 +704,9 @@ class FailoverLedger:
         until = entry.get("until_ms")
         if isinstance(until, int) and not isinstance(until, bool) and until > 0 \
                 and now >= until:
-            # F24：时间流逝不等于解除；这里只反映“等待观察窗已过”，仍返回记录
-            # 并标记 expired，由用例决定是否需要人工/恢复证据。
-            return {**entry, "blocked": False, "expired": True}
+            # F24：时间流逝不等于解除。观察窗到期只作状态提示，派单仍须显式
+            # 清除阻断（具备独立恢复证据或人工理由）。
+            return {**entry, "blocked": True, "expired": True}
         return {**entry, "blocked": True, "expired": False}
 
     def clear_route_blocked(self, route: str, *, reason: str,
@@ -409,6 +717,8 @@ class FailoverLedger:
         now = now if isinstance(now, int) else self._now_ms()
         key = f"{ROUTE_BLOCK_PREFIX}{route}"
         with transaction(self.conn):
+            self._require_guard()
+            self._ensure_schema()
             raw = meta_get(self.conn, key)
             if raw is None:
                 return {"cleared": False, "reason": "not-blocked"}
@@ -426,20 +736,21 @@ class FailoverLedger:
 
     # ---- 游标（恢复调谐公平扫描，只由用例推进） -----------------------------
     def get_cursor(self, kind: str) -> str | None:
+        if not self._read_schema():
+            return None
         raw = meta_get(self.conn, f"{CURSOR_PREFIX}{kind}")
         return raw if isinstance(raw, str) and raw else None
 
     def set_cursor(self, kind: str, value: str | None) -> None:
         key = f"{CURSOR_PREFIX}{kind}"
-        if value is None:
-            meta_set(self.conn, key, "")
-            return
-        meta_set(self.conn, key, value)
+        with transaction(self.conn):
+            self._require_guard()
+            self._ensure_schema()
+            meta_set(self.conn, key, "" if value is None else value)
 
     # ---- 只读投影/能力守卫 ---------------------------------------------------
     def guard_valid(self) -> dict:
-        """只读能力写契约有效性投影（详细安装/拒写由任务5.1统一实现）。"""
-        self._read_schema()
+        """只读能力写契约与自有记录的有效性投影。"""
         schema = meta_get(self.conn, FAILOVER_SCHEMA_KEY)
         invalid = 0
         try:
@@ -455,7 +766,14 @@ class FailoverLedger:
             self.list_records("operation", limit=1)
         except FailoverStateError:
             invalid += 1
-        return {"schema": schema or None, "valid": invalid == 0,
+        try:
+            guard = check_failover_guard(self.conn)
+            guard_error = None
+        except Exception as exc:
+            guard, guard_error = False, str(exc)
+        return {"schema": schema or None,
+                "valid": bool(guard and schema is not None and invalid == 0),
+                "guard_installed": bool(guard), "guard_error": guard_error,
                 "invalid_records": invalid}
 
     def new_id(self, prefix: str, length: int = 12) -> str:
