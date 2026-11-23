@@ -1,0 +1,13 @@
+{
+  "data": [
+    {
+      "id": "msg_user_1",
+      "time": {
+        "created": 1794008072447
+      },
+      "text": "携带损坏 cursor 的页。",
+      "type": "user"
+    }
+  ],
+  "cursor": "broken"
+}

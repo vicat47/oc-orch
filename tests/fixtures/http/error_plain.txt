@@ -1,0 +1,4 @@
+<!DOCTYPE html>
+<html><head><title>500 Internal Server Error</title></head>
+<body><h1>网关或应用内部错误</h1><p>detail <<REDACTED>></p></body>
+</html>

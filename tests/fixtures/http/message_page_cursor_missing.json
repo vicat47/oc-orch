@@ -1,0 +1,12 @@
+{
+  "data": [
+    {
+      "id": "msg_user_1",
+      "time": {
+        "created": 1794008072447
+      },
+      "text": "截断页：缺 cursor 字段违反 SessionMessagesResponse required=[data,cursor]。",
+      "type": "user"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+: oc-orch 适配器契约夹具：OpenCode V2 事件流样本（脱敏占位，非真实数据）
+: 事件信封与 V2 文档 /api/event 一致；sessionID/正文/原因均以 <<REDACTED_*>> 占位
+: 帧规则：data: 前缀行拼接（多行以换行合并）；空行终结帧；: 注释与 event:/id: 被忽略
+data: {"type":"server.connected","data":{}}
+
+data: {"type":"session.execution.started",
+data:  "data":{"sessionID":"ses_<<REDACTED_SESSION>>"}}
+
+: 注释行帧（无 data:）不得产出事件
+: 多空行也不得产出空事件
+
+
+event: ignore-me
+id: 1
+data: {"type":"session.tool.called","data":{"sessionID":"ses_<<REDACTED_SESSION>>","tool":"shell"}}
+
+data: {"type":"session.text.delta","data":{"sessionID":"ses_<<REDACTED_SESSION>>","delta":"<<REDACTED_CONTENT>>"}}
+
+data: <<REDACTED_BAD_JSON_FRAME
+
+data: "{\"type\":\"permission.asked\",\"data\":{\"id\":\"per_<<REDACTED>>\",\"sessionID\":\"ses_<<REDACTED_SESSION>>\"}}"
+
+data: [1,2,3]
+
+data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_<<REDACTED_SESSION>>"}}
+
+data: {"type":"session.execution.failed","data":{"sessionID":"ses_<<REDACTED_SESSION>>","reason":"<<REDACTED_REASON>>"}}
+

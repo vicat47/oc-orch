@@ -1,0 +1,19 @@
+{
+  "name": "oc-orch-bridge",
+  "version": "0.0.1",
+  "private": true,
+  "description": "oc-orch 交付策略薄客户端（TUI 入口 + 纯 JS GUI 入口候选；零运行时依赖，SDK 由宿主解析）",
+  "type": "module",
+  "exports": {
+    "./bridge": "./src/bridge.js",
+    "./tui": "./src/tui.js",
+    "./instructions": "./src/instructions.js"
+  },
+  "files": ["src", "tests"],
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

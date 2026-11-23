@@ -1,0 +1,10 @@
+[Unit]
+Description=oc-orch operator email executor (one bounded tick)
+After=default.target
+
+[Service]
+Type=oneshot
+Environment=OC_ORCH_HOME=%h/.local/share/opencode-orchestrator
+Environment="PATH=@MAIL_PATH@"
+ExecStart=%h/.local/bin/oc-orch --home %h/.local/share/opencode-orchestrator email tick
+NoNewPrivileges=true

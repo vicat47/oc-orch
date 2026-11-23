@@ -1,0 +1,22 @@
+{
+  "schema": "oc-orch.web-assets.v1",
+  "version": "0.1.0",
+  "files": {
+    "app.js": {
+      "sha256": "7e4530c57955063f34f03fea1cd99f0013a0ff8b10372e88921a34d6dd6a8b48",
+      "size": 167623
+    },
+    "app.css": {
+      "sha256": "145c8a3a53a4526818f9223c2abad555b4a91144dd3baf2cff733847e20882b3",
+      "size": 8805
+    },
+    "index.html": {
+      "sha256": "0eb41d3e175107a66a12e5ccbcef0d6baad2e62f0a39340d6de2ab8d81385bf7",
+      "size": 877
+    },
+    "THIRD_PARTY_LICENSES.txt": {
+      "sha256": "b1c7385d171ed6f7add5bfa72a5675e4de196f1738a0f8a48675272ed6d74fdc",
+      "size": 8107
+    }
+  }
+}

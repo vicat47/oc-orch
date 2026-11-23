@@ -1,0 +1,2 @@
+# sdist 必须携带前端生成资源（wheel 经 package-data 携带；sdist 显式声明）
+recursive-include src/oc_orch/entrypoints/web_assets *.js *.css *.html *.txt *.json

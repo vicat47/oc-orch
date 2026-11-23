@@ -1,0 +1,11 @@
+[Unit]
+Description=Run oc-orch operator email executor every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

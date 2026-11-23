@@ -1,0 +1,5 @@
+{
+  "_tag": "RateLimitError",
+  "message": "rate limit exceeded: retry after <<REDACTED>>",
+  "code": "RATE_LIMITED"
+}

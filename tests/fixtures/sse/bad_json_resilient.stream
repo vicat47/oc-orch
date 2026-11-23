@@ -1,0 +1,8 @@
+: oc-orch 适配器契约夹具：坏 JSON 帧不应中断事件流
+: 当前解析器对坏 JSON 帧静默跳过，后续帧继续产出；本样本固定该行为
+data: {"type":"server.connected","data":{}}
+
+data: {oops-<<REDACTED_BAD_JSON
+
+data: {"type":"session.created","data":{"id":"ses_<<REDACTED_SESSION>>"}}
+

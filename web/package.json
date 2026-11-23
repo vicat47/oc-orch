@@ -1,0 +1,22 @@
+{
+  "name": "oc-orch-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22.13"},
+  "scripts": {
+    "build": "node build.mjs",
+    "build:check": "node build.mjs --check",
+    "test": "node --test tests/*.test.mjs",
+    "test:bundle": "node --test tests/app.bundle.test.mjs",
+    "test:browser": "node browser/smoke.mjs"
+  },
+  "dependencies": {
+    "lit": "3.3.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0",
+    "esbuild": "0.28.2",
+    "jsdom": "29.0.1"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "_tag": "UnauthorizedError",
+  "message": "authentication failed: token <<REDACTED>>",
+  "code": "UNAUTHORIZED"
+}

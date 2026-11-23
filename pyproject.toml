@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oc-orch"
+dynamic = ["version"]
+description = "OpenCode V2 多 Session 可靠调度、恢复与交付验收 Supervisor"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3"]
+
+[project.scripts]
+oc-orch = "oc_orch.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+# 前端生成资源（build.mjs 产物）随 wheel/sdist 本地分发：无 CDN、无 Node 运行期。
+[tool.setuptools.package-data]
+"oc_orch.entrypoints.web_assets" = ["*.js", "*.css", "*.html", "*.txt", "*.json"]
+
+[tool.setuptools.dynamic]
+version = {attr = "oc_orch.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

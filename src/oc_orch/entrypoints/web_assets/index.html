@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>oc-orch 控制面</title>
+  <!-- 页面外壳：HTML/CSS/JS 均为本地同源资源，随 wheel/sdist 分发，无 CDN。
+       <oc-orch-app> 初始为空：初载提示由 CSS :not(:defined)::before 提供，元素定义后
+       自动消失；不在 HTML 静态内容中内联启动提示，避免 light DOM 加载后残留。
+       #toast 由 <oc-orch-app> 渲染时唯一创建（ui.js 经 $("toast") 使用），外壳不再声明。 -->
+  <link rel="stylesheet" href="/assets/app.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <oc-orch-app></oc-orch-app>
+  <noscript>控制面需要启用 JavaScript；数据与操作经同源 API 提供。</noscript>
+</body>
+</html>

@@ -1,0 +1,55 @@
+name: offline-tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  offline:
+    name: python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: 安装前端测试依赖并准备临时目录
+        run: |
+          mkdir -p /tmp/opencode
+          npm ci --prefix web --ignore-scripts
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: 创建干净 venv 并按锁定文件安装 dev 依赖
+        run: uv venv .venv
+
+      - name: 锁定安装（pytest 及传递依赖）
+        run: uv pip install --python .venv/bin/python --require-hashes -r requirements-dev.lock
+
+      - name: 安装包入口（无运行时依赖）
+        run: uv pip install --python .venv/bin/python --no-deps -e .
+
+      - name: 分层离线回归（unit/integration/contract/all，隔离环境）
+        run: |
+          .venv/bin/python scripts/check_offline.py --layer unit --runner pytest
+          .venv/bin/python scripts/check_offline.py --layer integration --runner pytest
+          .venv/bin/python scripts/check_offline.py --layer contract --runner pytest
+          .venv/bin/python scripts/check_offline.py --layer all --runner pytest
+
+      - name: 架构依赖/边界检查（AST 守卫）
+        run: .venv/bin/python scripts/check_boundaries.py
+
+      - name: 控制台入口可调用且版本一致
+        run: |
+          .venv/bin/oc-orch --help >/dev/null
+          .venv/bin/python -c "import oc_orch, importlib.metadata as m; assert oc_orch.__version__ == m.version('oc-orch'), (oc_orch.__version__, m.version('oc-orch'))"

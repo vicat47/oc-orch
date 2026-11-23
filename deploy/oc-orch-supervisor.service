@@ -1,0 +1,17 @@
+[Unit]
+Description=oc-orch OpenCode multi-session supervisor
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=@OC_ORCH_REPO@
+Environment=OC_ORCH_HOME=%h/.local/share/opencode-orchestrator
+ExecStart=%h/.local/bin/oc-orch --home %h/.local/share/opencode-orchestrator supervisor run
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

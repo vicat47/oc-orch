@@ -1,0 +1,7 @@
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+tests/fixtures/sse/*.stream -whitespace
+# 生成资源的内容与第三方许可证均参与逐字节校验。
+src/oc_orch/entrypoints/web_assets/app.js -whitespace
+src/oc_orch/entrypoints/web_assets/THIRD_PARTY_LICENSES.txt -whitespace
