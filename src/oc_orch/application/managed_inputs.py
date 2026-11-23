@@ -201,6 +201,8 @@ class ManagedInputs:
         """
         keys = ("tracked", "task_id", "attempt_id", "generation",
                 "result_version", "work_kind", "target_session", "boundary")
+        if bool(existing.get("same_candidate")) != bool(planned.get("same_candidate")):
+            return False
         if any(existing.get(k) != planned.get(k) for k in keys):
             return False
 
@@ -240,6 +242,8 @@ class ManagedInputs:
                 "work_kind": plan.get("work_kind_source"),
             },
         }
+        if plan.get("same_candidate"):
+            tracking["same_candidate"] = True
         if not plan.get("tracked"):
             tracking["boundary"] = plan.get("boundary")
         return tracking
@@ -657,8 +661,11 @@ class ManagedInputs:
             raise ActionError(
                 "ownership", "发送前尝试归属已变化，拒绝发送",
                 {"task_id": task["id"], "attempt_id": att.get("id")})
-        if plan.get("work_kind") == rules.WORK_WRITE:
+        if plan.get("same_candidate") or plan.get("work_kind") == rules.WORK_WRITE:
             block = rules.write_send_block_reason(att, task)
+            if block and plan.get("same_candidate"):
+                raise ActionError("ownership", f"同候选补充需要当前活动 attempt（{block}）",
+                                  {"task_id": task["id"], "attempt_id": att.get("id")})
             if block is not None:
                 raise ActionError(
                     "write_requires_rework",
@@ -802,7 +809,7 @@ class ManagedInputs:
         self, session_id, *, text, message_id=None, owner=None, task_id=None,
         attempt_id=None, target_session=None, deadline=None, materials=None,
         work_kind=None, delivery="queue", untracked=False, request_id=None,
-        require_tracked=False,
+        require_tracked=False, same_candidate=False,
     ) -> dict:
         """向已托管 worker 发送 execute 输入，默认持久登记输入与后续责任。
 
@@ -862,6 +869,11 @@ class ManagedInputs:
                     {"session_id": session_id, "required": "tracked",
                      "untracked_required": True})
 
+        if same_candidate:
+            if not attempt_id or not plan.get("tracked") or untracked:
+                raise ActionError("usage", "--same-candidate 需要显式当前 --attempt 和托管执行输入",
+                                  {"session_id": session_id})
+            plan["same_candidate"] = True
         tracking = self._tracking_payload(plan)
         idem_key = (request_id
                     or (f"{_TRACKED_REQUEST_PREFIX}{message_id}"
@@ -984,7 +996,7 @@ class ManagedInputs:
         try:
             self._client().prompt(
                 session_id, message_id=row["message_id"],
-                text=row.get("body") or text, delivery=delivery,
+                text=rules.execution_prompt(row), delivery=delivery,
                 resume=True)
         except Exception as exc:
             row = self._record(row, now, indicator="unknown",
@@ -1027,7 +1039,7 @@ class ManagedInputs:
              project="", expires_at=None, flush_condition=None,
              task_id=None, attempt_id=None, target_session=None,
              deadline=None, materials=None, work_kind=None,
-             untracked=False) -> dict:
+             untracked=False, same_candidate=False) -> dict:
         """显式 intent 共享入口；execute 对已托管 task 必须委托 send_tracked。
 
         - execute + 明确托管 task：不要求白名单，登记输入与后续责任；
@@ -1044,6 +1056,15 @@ class ManagedInputs:
             flush_condition=flush_condition)
         if not check["valid"]:
             raise ActionError("usage", check["reason"], {"session_id": session_id})
+        if same_candidate:
+            if intent != rules.INTENT_EXECUTE or untracked or not attempt_id:
+                raise ActionError("usage", "--same-candidate 需要托管 execute 和显式当前 --attempt",
+                                  {"session_id": session_id})
+            return self.send_tracked(
+                session_id, text=text, owner=owner, request_id=request_id,
+                task_id=task_id, attempt_id=attempt_id, target_session=target_session,
+                deadline=deadline, materials=materials, work_kind=work_kind,
+                require_tracked=True, same_candidate=True)
         if untracked and intent != rules.INTENT_EXECUTE:
             raise ActionError(
                 "usage", "untracked 仅适用于 execute 纯通信；park/record 不支持",

@@ -1267,6 +1267,8 @@ def cmd_send(args) -> int:
         delivery=args.delivery,
         untracked=bool(args.untracked),
     )
+    if args.same_candidate:
+        kw["same_candidate"] = True
     with ctx.managed() as mi:
         out = mi.send_tracked(args.session, **kw)
     inp = out.get("input") or {}
@@ -1464,6 +1466,8 @@ def cmd_input_send(args) -> int:
         kw["work_kind"] = args.work_kind
     if args.untracked:
         kw["untracked"] = True
+    if args.same_candidate:
+        kw["same_candidate"] = True
     if args.intent == "park":
         if args.expires_at is None or not (args.flush_condition or "").strip():
             return fail(args, "usage",
@@ -2419,6 +2423,8 @@ def build_parser() -> argparse.ArgumentParser:
                    default=None,
                    help="工作性质（显式声明）；缺省不猜只读：封存/释放目标会拒绝，"
                         "需改走 rework 或显式 --work-kind observe/read_only")
+    s.add_argument("--same-candidate", action="store_true",
+                   help="对同一构建和输入补充验法；需显式当前 --attempt，附逐条消费回执要求")
     s.add_argument("--untracked", action="store_true",
                    help="显式纯通信：不登记责任/不授予写权，并展示未托管边界")
     s.set_defaults(func=cmd_send)
@@ -2449,6 +2455,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--work-kind", choices=["observe", "read_only", "write"],
                    default=None,
                    help="显式工作性质；缺省不猜只读（封存/释放目标会拒绝）")
+    c.add_argument("--same-candidate", action="store_true",
+                   help="对同一构建和输入补充验法；需显式当前 --attempt，附逐条消费回执要求")
     c.add_argument("--untracked", action="store_true",
                    help="显式纯通信：不登记任务责任/不授予写权并展示边界")
     c.set_defaults(func=cmd_input_send)

@@ -34,6 +34,8 @@ WORK_KINDS = (WORK_OBSERVE, WORK_WRITE)
 DELIVERY_MODES = ("queue", "steer")
 # 结构化接续报告协议：kind/id 字段固定，禁止只看自然语言文本。
 CONTINUATION_SCHEMA = "oc-orch.continuation.v1"
+CONTINUATION_BINDING = ("input_id", "session_id", "message_id", "task_id",
+                        "attempt_id", "generation", "result_version")
 REPORT_KINDS = ("completed", "blocked", "needs_material", "needs_decision")
 # work_kind=None 表示调用方未声明；不得默认成已授权只读，也不得默认成写。
 UNTRACKED_BOUNDARY = (
@@ -397,6 +399,23 @@ def tracking_block(input_row: dict) -> dict:
 
 
 
+def continuation_binding(row: dict) -> dict:
+    tracking = tracking_block(row)
+    return {key: row[key] if key in ("input_id", "session_id", "message_id")
+            else tracking.get(key) for key in CONTINUATION_BINDING}
+
+
+def execution_prompt(row: dict) -> str:
+    body = row["body"]
+    if not tracking_block(row).get("same_candidate"):
+        return body
+    identity = dict(schema=CONTINUATION_SCHEMA, **continuation_binding(row))
+    return (body + "\n\n处理这条同候选补充后，请在 assistant 回复中附独立的 JSON 代码块。"
+            "保留下列全部标识字段，按事实添加 kind（completed / blocked / "
+            "needs_material / needs_decision）及非空 next_action。另行给出业务验收结论。\n"
+            + json.dumps(identity, ensure_ascii=False))
+
+
 def _evidence(block: dict) -> dict:
     ev = block.get("evidence")
     return ev if isinstance(ev, dict) else {}
@@ -603,7 +622,7 @@ def receipt_view(input_row: dict, *, now: int, include_body: bool = False) -> di
         for key in ("task_id", "attempt_id", "generation", "result_version",
                     "work_kind", "target_session", "responsibility_id",
                     "responsibility_revision", "wait_condition", "next_check_at",
-                    "deadline", "boundary"):
+                    "deadline", "boundary", "same_candidate"):
             if key in tracking:
                 view[key] = tracking.get(key)
     else:

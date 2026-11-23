@@ -1674,7 +1674,8 @@ class Ledger(InputLedger):
                     "last_at": self._now_ms(),
                     "evidence": verdict.get("evidence"),
                     "source": source,
-                    "next_action": _exec_rules.unconfirmed_next_action(verdict["reason"]),
+                    "next_action": _exec_rules.unconfirmed_next_action(
+                        verdict["reason"], (verdict.get("evidence") or {}).get("interval")),
                 }
                 meta["execution"] = execution_out
                 self.conn.execute(
@@ -1746,6 +1747,9 @@ class Ledger(InputLedger):
                 "recorded_at": ts,
             }
             execution_out = dict(execution or {})
+            if interval.get("consumed_inputs") and verdict["reason"] == _exec_rules.R_INTERVAL:
+                terminal_evidence["supplement_count"] = interval["supplement_count"]
+                terminal_evidence["consumed_inputs"] = interval["consumed_inputs"]
             execution_out["terminal"] = terminal_evidence
             execution_out["unconfirmed"] = {}
             meta = dict(att["metadata"])

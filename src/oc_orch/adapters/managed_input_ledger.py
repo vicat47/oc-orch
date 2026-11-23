@@ -272,6 +272,7 @@ def _tracking_identity(tracking: Any) -> tuple:
         tracking.get("generation"), tracking.get("result_version"),
         tracking.get("work_kind"), tracking.get("target_session"),
         tracking.get("boundary"), deadline_key, materials_key,
+        bool(tracking.get("same_candidate")),
     )
 
 

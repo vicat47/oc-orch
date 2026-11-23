@@ -324,6 +324,28 @@ class ManagedTrackingTests(unittest.TestCase):
         self.assertEqual(self.client.prompt_calls, [])
         self.assertEqual(self.mil.list_managed_inputs(), [])
 
+    def test_same_candidate_requires_active_explicit_attempt_and_preserves_retry_identity(self):
+        task = self.task()
+        att = self.attempt(task)
+        with self.assertRaises(ActionError):
+            self.send(same_candidate=True)
+        with self.assertRaises(ActionError):
+            self.svc.send("ses_worker", intent="record", owner="op", text="x",
+                          request_id="record", attempt_id=att["id"], same_candidate=True)
+        first = self.send(attempt_id=att["id"], same_candidate=True)
+        second = self.send(attempt_id=att["id"], same_candidate=True)
+        self.assertEqual(first["input"]["input_id"], second["input"]["input_id"])
+        with self.assertRaises(LedgerError):
+            self.send(attempt_id=att["id"])
+        self.assertEqual(len(self.client.prompt_calls), 1)
+        self.base.release_site(att["id"], confirmed=True, external_stopped=True,
+                               actor="test", note="done")
+        self.deliver()
+        with self.assertRaises(ActionError):
+            self.send(message_id="after-release", attempt_id=att["id"], work_kind="observe",
+                      same_candidate=True)
+        self.assertEqual(len(self.client.prompt_calls), 1)
+
     def test_explicit_untracked_never_grants_write_or_opens_responsibility(self):
         self.attempt(self.task())
         result = self.send(untracked=True)

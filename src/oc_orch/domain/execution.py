@@ -253,11 +253,14 @@ def attribute(execution: dict | None, candidate: dict) -> dict:
     # 新 session 无旧回合可排除，但既无 started 也无区间证据 → 继续补证
     return {"status": STATUS_UNCONFIRMED, "reason": R_NO_EPOCH,
             "evidence": {"ended_at": ended, "busy_at": busy,
-                         "started_hint": started_hint}}
+                         "started_hint": started_hint,
+                         "interval": {k: v for k, v in interval.items() if k != "error"}}}
 
 
-def unconfirmed_next_action(reason: str) -> str:
+def unconfirmed_next_action(reason: str, interval: dict | None = None) -> str:
     """unconfirmed/stale 的可操作下一动作（供 metadata 和通知引用）。"""
+    if reason == R_NO_EPOCH and (interval or {}).get("reason") == "multi-round-interval":
+        return "核对区间内的输入与 idle；同候选逐条查消费回执，换版则用新 attempt 独审"
     mapping = {
         R_MISSING_END_TIME: "等待服务端补齐 idle/outcome 时间后对账；不得用观察时间补造",
         R_INPUT_UNDELIVERED: "输入仍在 inbox 排队；等待投递，不得提前判定完成",

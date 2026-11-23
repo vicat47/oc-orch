@@ -52,6 +52,7 @@ from ..domain.classify import (
 )
 from ..domain.errors import ApiError, LedgerError, TransportError
 from ..domain import execution as execution_rules
+from ..domain import managed_inputs as input_rules
 from ..domain.rules import ATTEMPT_TERMINAL
 # S2/S3 契约常量与安全异常统一经组合根再导出（runtime 不直接依赖 adapters）。
 from ..domain.wake_policy import should_suppress_wake
@@ -78,7 +79,7 @@ _GATE_PUSH_BLOCK_STATES = frozenset({
 })
 
 # S4 结构化接续报告（严格 JSON envelope / metadata.continuation）。
-CONTINUATION_SCHEMA = "oc-orch.continuation.v1"
+CONTINUATION_SCHEMA = input_rules.CONTINUATION_SCHEMA
 CONTINUATION_KINDS = ("completed", "blocked", "needs_material",
                       "needs_decision")
 CONTINUATION_CLASSIFICATION = {
@@ -87,9 +88,7 @@ CONTINUATION_CLASSIFICATION = {
     "needs_material": "NEEDS_MATERIAL",
     "needs_decision": "NEEDS_DECISION",
 }
-_CONTINUATION_BINDING = ("input_id", "session_id", "message_id",
-                         "task_id", "attempt_id", "generation",
-                         "result_version")
+_CONTINUATION_BINDING = input_rules.CONTINUATION_BINDING
 _CONTINUATION_PAYLOAD_KEYS = ("materials", "missing_materials", "decision",
                               "evidence_refs")
 _FENCED_JSON = re.compile(r"```json\s*(\{.*?\})\s*```", re.DOTALL)
@@ -191,7 +190,8 @@ def extract_continuation_report(messages, *, after_ms: int,
 def _report_matches(row: dict, report: dict) -> bool:
     """报告绑定必须与责任/输入 tracking 精确一致。"""
     for key in _CONTINUATION_BINDING:
-        if report.get(key) != row.get(key):
+        actual, expected = report.get(key), row.get(key)
+        if type(actual) is not type(expected) or actual != expected:
             return False
     return True
 
@@ -1970,6 +1970,39 @@ class Supervisor:
             return "ambiguous"  # 无区间边界信息：保守视为可能共享
         return "unique"
 
+    def _supplement_receipt(self, att, message, reports):
+        """只为该代次、该物理输入的实际消费提供归属；不改变责任/业务状态。"""
+        mid = message.get("id")
+        ref = {"message_id": mid}
+        if not mid:
+            return ref, "missing-message-id"
+        if message.get("sessionID") not in (None, att["session_id"]):
+            return ref, "different-execution"
+        row = self.ledger.input_for_receipt(att["session_id"], mid)
+        if not row or row.get("source") != "managed_input" or row.get("intent") != "execute":
+            return ref, "untracked-input"
+        tracking = input_rules.tracking_block(row)
+        ref.update(input_id=row["input_id"], attempt_id=tracking.get("attempt_id"),
+                   generation=tracking.get("generation"))
+        if (not tracking.get("tracked") or tracking.get("task_id") != att["task_id"]
+                or tracking.get("attempt_id") != att["id"]
+                or tracking.get("generation") != att["generation"]):
+            return ref, "different-execution"
+        if tracking.get("same_candidate") is not True:
+            return ref, "same-candidate-not-declared"
+        if input_rules.delivery_state(row) != input_rules.DELIVERY_DELIVERED:
+            return ref, "delivery-unconfirmed"
+        binding = input_rules.continuation_binding(row)
+        rid = tracking.get("responsibility_id")
+        duty = self._responsibility_store().get_responsibility(rid) if rid else None
+        if not duty or not _report_matches(binding, duty):
+            return ref, "responsibility-mismatch"
+        for created, report in reports.get(mid, ()):
+            if created > _message_created(message) and _report_matches(binding, report):
+                ref["report_message_id"] = report["source_message_id"]
+                return ref, None
+        return ref, "missing-bound-report"
+
     def _rest_interval_evidence(self, att: dict, outcome: str, *, ended_at) -> dict:
         """严格有界区间证明（审查1 + 第三轮）：经组合根 Results.message_window
         复用 C 的 read_message_window 严格分页（覆盖不完整绝不 proven）。
@@ -1979,7 +2012,7 @@ class Supervisor:
         - 窗口 (input_at, ended] 内**正好一台** idle 消息且匹配 outcome、created == ended；
         - 窗口 (input_at, ended] 内无其他 idle（旧 idle/其他回合夹在锚点与匹配
           idle 之间 → 多回合归属不明，不 proven，不能以 coverage complete 替代
-          回合唯一性）且无后续 user 输入（中间后续输入/多回合排除）。
+          回合唯一性）且每条后续 user 输入均有同候选声明和精确绑定的消费回执。
 
         查询失败/覆盖不足/回合不唯一均 proven=False（不 terminal/收集/通知/释放）。
         """
@@ -1995,6 +2028,8 @@ class Supervisor:
         since_ms = (execution_rules._int(epoch.get("started_at"))
                     or b_busy or b_idle)
         ended = execution_rules._int(ended_at)
+        if ended is None:
+            return {"proven": False, "anchor_id": msg_id, "reason": "missing-end-time"}
         try:
             messages, coverage = self._window(
                 sid, anchor_id=msg_id, since_ms=since_ms, until_ms=ended)
@@ -2020,40 +2055,46 @@ class Supervisor:
             return {"proven": False, "anchor_id": msg_id,
                     "anchor_found": True, "coverage": "complete",
                     "reason": "anchor-time-missing"}
-        matching_idles: list[dict] = []
-        other_in_between: list[dict] = []
-        for m in messages:
-            if m.get("id") == msg_id and m.get("type") == "user":
-                continue  # 锚点本身
-            t = _message_created(m)
-            if t <= input_at:
-                continue  # 锚点前旧回合（基线区域，允许）
-            if t > ended:
-                continue  # 区间外
-            if m.get("type") == "idle":
-                if m.get("outcome") == outcome and t == ended:
-                    matching_idles.append(m)
-                else:
-                    # 旧 idle/其他回合夹在锚点与匹配 idle 之间：多回合
-                    other_in_between.append(m)
-            elif m.get("type") == "user":
-                other_in_between.append(m)  # 后续 user 输入
-        if len(matching_idles) == 1 and not other_in_between:
-            return {
-                "proven": True,
-                "anchor_id": msg_id,
-                "input_at": input_at,
-                "idle_at": ended,
-                "idle_message": True,
-                "scanned": len(messages),
-                "coverage": "complete",
-            }
-        return {"proven": False, "anchor_id": msg_id,
-                "anchor_found": True, "coverage": "complete",
-                "has_idle_match": bool(matching_idles),
-                "idle_count": len(matching_idles),
-                "interval_conflicts": len(other_in_between),
-                "reason": "multi-round-interval"}
+        window = [m for m in messages if input_at <= _message_created(m) <= ended]
+        idles = [m for m in window if m.get("type") == "idle"
+                 and _message_created(m) > input_at]
+        matches = sum(m.get("outcome") == outcome and _message_created(m) == ended
+                      for m in idles)
+        supplements = [m for m in window if m.get("type") == "user" and m.get("id") != msg_id]
+        reports = {}
+        if supplements:
+            for msg in window:
+                if (msg.get("type") != "assistant" or not msg.get("id")
+                        or msg.get("sessionID") not in (None, sid)):
+                    continue
+                parsed = extract_continuation_report([msg], after_ms=input_at, until_ms=ended)
+                report = parsed["report"]
+                if report and isinstance(report["message_id"], str):
+                    reports.setdefault(report["message_id"], []).append((_message_created(msg), report))
+        conflicts = len(idles) - min(matches, 1)
+        issues, accepted = [], []
+        for message in supplements:
+            if not execution or _message_created(message) == input_at:
+                ref, reason = {"message_id": message.get("id")}, "unproven-anchor-order"
+            else:
+                ref, reason = self._supplement_receipt(att, message, reports)
+            if reason:
+                conflicts += 1
+                if len(issues) < 8:
+                    issues.append(dict(ref, reason=reason))
+            elif len(accepted) < 8:
+                accepted.append(ref)
+
+        interval = {"anchor_id": msg_id, "anchor_found": True, "coverage": "complete",
+                    "idle_count": matches, "has_idle_match": bool(matches),
+                    "other_idle_count": len(idles) - matches,
+                    "supplement_count": len(supplements), "interval_conflicts": conflicts}
+        if matches != 1 or conflicts:
+            return dict(interval, proven=False, reason="multi-round-interval", conflicts=issues)
+        if accepted:
+            interval["consumed_inputs"] = accepted
+        return dict(interval, proven=True, input_at=input_at, idle_at=ended,
+                    idle_message=True, scanned=len(messages))
 
     def _window(self, session_id: str, *, anchor_id=None, since_ms=None,
                 until_ms=None):
@@ -2112,7 +2153,10 @@ class Supervisor:
         task = self.ledger.get_task(att["task_id"])
         if task["status"] in ("accepted", "cancelled"):
             return
-        next_action = execution_rules.unconfirmed_next_action(reason)
+        unconfirmed = ((att.get("metadata") or {}).get("execution") or {}).get("unconfirmed") or {}
+        evidence = unconfirmed.get("evidence") if unconfirmed.get("reason") == reason else {}
+        interval = (evidence or {}).get("interval") or {}
+        next_action = execution_rules.unconfirmed_next_action(reason, interval)
         self.enqueue_task(
             task, "execution_unconfirmed",
             dedupe_key=f"terminal-unconfirmed:{att['id']}:{reason}",
@@ -2121,6 +2165,7 @@ class Supervisor:
                 "session_id": att.get("session_id"),
                 "classification": "EXECUTION_UNCONFIRMED",
                 "reason": reason,
+                **({"interval": interval} if interval else {}),
                 "summary": f"终态候选被拒绝（{reason}）；写权保持，等待补证",
                 "next_action": next_action,
             },

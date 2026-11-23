@@ -1183,6 +1183,106 @@ class TestIntervalSingleRound(IncidentBase):
                                              "time": {"created": started}})
         return task, self.ledger.get_attempt(att["id"])
 
+    def _supplement(self, task, att, *, at, declared, request):
+        service = self.sup._managed_inputs_service()
+        result = service.send("ses_w", intent="execute", text="复查保存提示",
+                              owner="ses_c", task_id=task["id"], attempt_id=att["id"],
+                              request_id=request, work_kind="observe", same_candidate=declared)
+        physical = self.client.prompt_calls[-1]["text"]
+        self.client.deliver_inbox("ses_w", at=at)
+        service.reconcile(result["input"]["input_id"])
+        if declared:
+            self.assertIs(result["receipt"]["same_candidate"], True)
+            ident = json.loads(physical.splitlines()[-1])
+            self.assertEqual(ident["input_id"], result["input"]["input_id"])
+            return dict(ident, kind="completed", next_action="提交独审结论")
+
+    def _observe_interval(self, att):
+        self.client.add_idle("ses_w", outcome="succeeded", at=1_001_000)
+        self.client.set_session("ses_w", outcome="succeeded",
+                                time_={"idle": 1_001_000, "busy": 1_000_000}, active=False)
+        self.clock._wall = 1_001_200
+        self.sup.observe_attempt(self.ledger.get_attempt(att["id"]), {})
+        return self.ledger.get_attempt(att["id"])
+
+    def test_ws_review_historical_windows(self):
+        for count in (5, 1, 2, 0):
+            with self.subTest(supplements=count):
+                task, att = self._interval_world()
+                for i in range(count):
+                    self._supplement(task, att, at=1_000_100 + i, declared=False,
+                                     request=f"historical-{i}")
+                observed = self._observe_interval(att)
+                if count == 0:
+                    self.assertEqual(observed["terminal_at"], 1_001_000)
+                    continue
+                self.assertIsNone(observed["terminal_at"])
+                interval = observed["metadata"]["execution"]["unconfirmed"]["evidence"]["interval"]
+                self.assertEqual(interval["supplement_count"], count)
+                self.assertEqual(interval["interval_conflicts"], count)
+                self.assertEqual({r["reason"] for r in interval["conflicts"]},
+                                 {"same-candidate-not-declared"})
+
+    def test_old_supplement_delivered_in_new_window_cannot_complete_new_attempt(self):
+        task, old = self._interval_world()
+        report = self._supplement(task, old, at=1_000_300, declared=True, request="old-check")
+        self.ledger.release_site(old["id"], confirmed=True, external_stopped=True,
+                                 actor="test", note="旧现场已释放")
+        new_task = self.make_task()
+        new = self.ledger.create_attempt(
+            new_task["id"], directory=self.tmp, session_id="ses_w",
+            status="running", dispatch_state="confirmed", dispatch_msg_id="new-anchor",
+            deliverables=[], write_scope=[self.tmp])
+        self.ledger.seal_execution(new["id"], mode="reuse", session_before={},
+                                   baseline={}, allow_send=True, actor="coordinator", reason="test")
+        self.client.append_message("ses_w", {"id": "new-anchor", "type": "user",
+                                             "time": {"created": 1_000_200}})
+        self.client.append_message("ses_w", {"id": "old-report", "type": "assistant",
+                                             "time": {"created": 1_000_400},
+                                             "text": json.dumps(report)})
+        observed = self._observe_interval(new)
+        self.assertIsNone(observed["terminal_at"])
+        interval = observed["metadata"]["execution"]["unconfirmed"]["evidence"]["interval"]
+        self.assertEqual(interval["conflicts"][0]["reason"], "different-execution")
+        self.assertEqual(interval["conflicts"][0]["attempt_id"], old["id"])
+
+    def test_same_candidate_requires_each_delivered_input_and_exact_later_report(self):
+        for mismatch in (None, "missing", "attempt_id", "generation", "bool_generation",
+                         "result_version", "message_id", "early", "user"):
+            with self.subTest(mismatch=mismatch):
+                task, att = self._interval_world()
+                for i in range(2):
+                    at = 1_000_100 + 200 * i
+                    report = self._supplement(task, att, at=at, declared=True, request=f"check-{i}")
+                    if i == 1 and mismatch == "missing":
+                        continue
+                    role = "assistant"
+                    if i == 1 and mismatch:
+                        if mismatch == "early":
+                            at -= 10
+                        elif mismatch == "user":
+                            role = "user"
+                        elif mismatch == "bool_generation":
+                            report["generation"] = True
+                        else:
+                            report[mismatch] = "other"
+                    self.client.append_message("ses_w", {
+                        "id": f"answer-{i}", "type": role, "time": {"created": at + 1},
+                        "text": json.dumps(report)})
+                observed = self._observe_interval(att)
+                execution = observed["metadata"]["execution"]
+                if mismatch:
+                    self.assertIsNone(observed["terminal_at"])
+                    reasons = execution["unconfirmed"]["evidence"]["interval"]["conflicts"]
+                    self.assertIn("missing-bound-report", [r["reason"] for r in reasons])
+                else:
+                    self.assertEqual(observed["terminal_at"], 1_001_000)
+                    self.assertEqual(execution["terminal"]["supplement_count"], 2)
+                    self.assertEqual({r["report_message_id"] for r in
+                                      execution["terminal"]["consumed_inputs"]},
+                                     {"answer-0", "answer-1"})
+                    self.assertNotEqual(self.ledger.get_task(task["id"])["status"], "accepted")
+
     def test_multiple_idles_in_interval_not_proven(self):
         """旧 idle（时间/outcome 不匹配）夹在锚点与匹配 idle 之间 → 多回合拒绝。"""
         task, att = self._interval_world()
